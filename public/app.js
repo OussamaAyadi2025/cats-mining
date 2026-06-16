@@ -1,4 +1,4 @@
-const API = 'https://cats-mining-backend.onrender.com'; // SET TO BACKEND URL e.g. https://cats-mining-backend.onrender.com
+const API = ''; // SET TO BACKEND URL e.g. https://cats-mining-backend.onrender.com
 const tg = window.Telegram && window.Telegram.WebApp;
 let userData = null;
 let pendingInterval = null;
@@ -9,6 +9,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   const saved = localStorage.getItem('cm_lang');
   if (saved && LANGS[saved]) currentLang = saved;
   renderAll();
+  
+  // Check if inside Telegram
+  if (!tg || !tg.initDataUnsafe || !tg.initDataUnsafe.user) {
+    // Try to get from URL params or use test mode
+    const urlParams = new URLSearchParams(window.location.search);
+    const testId = urlParams.get('id');
+    if (testId) {
+      await registerWithId(testId, 'Test User', '');
+    }
+    return;
+  }
+  
   await registerUser();
 });
 
@@ -28,19 +40,26 @@ async function registerUser() {
       if (sp.startsWith('ref_')) refBy = sp.replace('ref_', '');
     }
     if (telegramId === '0') { renderAll(); return; }
+    await registerWithId(telegramId, firstName, username, photoUrl, refBy);
+  } catch (e) { console.error('Register error:', e); }
+}
 
+async function registerWithId(telegramId, firstName, username, photoUrl, refBy) {
+  try {
     const r = await fetch(API + '/api/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ telegramId, firstName, username, photoUrl, refBy })
+      body: JSON.stringify({ telegramId, firstName, username, photoUrl: photoUrl || '', refBy: refBy || '' })
     });
     const d = await r.json();
     if (d.success) {
       userData = d.user;
       renderAll();
       startPendingCounter();
+    } else {
+      toast('⚠️ ' + (d.error || 'Registration failed'));
     }
-  } catch (e) { console.error('Register error:', e); }
+  } catch (e) { toast('⚠️ Connection error'); console.error(e); }
 }
 
 async function refreshUser() {
