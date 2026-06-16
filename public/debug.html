@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cats Mining Debug</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+body{background:#0d0d12;color:#e8e8e8;font-family:monospace;padding:16px;font-size:13px;}
+.ok{color:#4ade80;} .err{color:#ef4444;} .warn{color:#f5a623;}
+.box{background:#1a1a24;border:1px solid #2a2a3a;border-radius:8px;padding:12px;margin-bottom:10px;}
+h3{color:#f5a623;margin:0 0 8px;}
+button{background:#f5a623;color:#0d0d12;border:none;padding:10px 20px;border-radius:8px;font-weight:bold;margin:4px;cursor:pointer;}
+pre{white-space:pre-wrap;word-break:break-all;}
+</style>
+</head>
+<body>
+<h2 style="color:#f5a623">🐱 Cats Mining — Debug</h2>
+
+<div class="box" id="tg-info"><h3>1. Telegram WebApp</h3><div id="tg-result">Checking...</div></div>
+<div class="box" id="api-info"><h3>2. Backend API</h3><div id="api-result">Waiting...</div></div>
+<div class="box" id="reg-info"><h3>3. Registration</h3><div id="reg-result">Waiting...</div></div>
+<div class="box"><h3>4. Manual Test</h3>
+<button onclick="testAPI()">Test Backend</button>
+<button onclick="testRegister()">Test Register</button>
+<button onclick="testTasks()">Test Tasks</button>
+</div>
+<div class="box"><h3>Log</h3><pre id="log"></pre></div>
+
+<script>
+const API = 'https://cats-mining-backend.onrender.com';
+const tg = window.Telegram && window.Telegram.WebApp;
+
+function log(msg) {
+  document.getElementById('log').textContent += new Date().toLocaleTimeString() + ' | ' + msg + '\n';
+}
+
+// 1. Check Telegram
+(function checkTG() {
+  const el = document.getElementById('tg-result');
+  let html = '';
+  
+  if (!window.Telegram) {
+    html = '<span class="err">❌ Telegram object NOT found</span><br>Not running inside Telegram!';
+    log('Telegram: NOT found');
+  } else if (!tg) {
+    html = '<span class="err">❌ WebApp NOT found</span>';
+    log('WebApp: NOT found');
+  } else {
+    html = '<span class="ok">✅ WebApp found</span><br>';
+    html += 'Platform: ' + (tg.platform || 'unknown') + '<br>';
+    html += 'Version: ' + (tg.version || 'unknown') + '<br>';
+    html += 'initData: ' + (tg.initData ? '<span class="ok">YES (' + tg.initData.length + ' chars)</span>' : '<span class="err">EMPTY</span>') + '<br>';
+    
+    log('Platform: ' + (tg.platform || 'unknown'));
+    log('Version: ' + (tg.version || 'unknown'));
+    log('initData length: ' + (tg.initData ? tg.initData.length : 0));
+    
+    if (tg.initDataUnsafe) {
+      html += 'User: ' + JSON.stringify(tg.initDataUnsafe.user || 'NULL') + '<br>';
+      html += 'start_param: ' + (tg.initDataUnsafe.start_param || 'none') + '<br>';
+      log('User: ' + JSON.stringify(tg.initDataUnsafe.user || 'NULL'));
+    } else {
+      html += '<span class="err">initDataUnsafe: NULL</span><br>';
+      log('initDataUnsafe: NULL');
+    }
+
+    // Try parsing initData manually
+    if (tg.initData) {
+      try {
+        const params = new URLSearchParams(tg.initData);
+        const userStr = params.get('user');
+        if (userStr) {
+          const u = JSON.parse(userStr);
+          html += '<span class="ok">Parsed user: ' + u.id + ' / ' + u.first_name + '</span><br>';
+          log('Parsed user: ' + u.id + ' / ' + u.first_name);
+        }
+      } catch(e) {
+        html += '<span class="err">Parse error: ' + e.message + '</span><br>';
+      }
+    }
+    
+    tg.ready();
+    tg.expand();
+  }
+  
+  el.innerHTML = html;
+})();
+
+// 2. Test API
+async function testAPI() {
+  const el = document.getElementById('api-result');
+  el.innerHTML = '<span class="warn">⏳ Testing...</span>';
+  log('Testing backend...');
+  try {
+    const r = await fetch(API + '/health');
+    const d = await r.json();
+    el.innerHTML = '<span class="ok">✅ Backend OK</span><br>' + JSON.stringify(d);
+    log('Backend: OK - ' + JSON.stringify(d));
+  } catch(e) {
+    el.innerHTML = '<span class="err">❌ Backend FAILED: ' + e.message + '</span>';
+    log('Backend FAILED: ' + e.message);
+  }
+}
+
+// 3. Test Register
+async function testRegister() {
+  const el = document.getElementById('reg-result');
+  el.innerHTML = '<span class="warn">⏳ Registering...</span>';
+  
+  let telegramId = '0', firstName = 'Debug', username = '';
+  
+  // Try Telegram
+  if (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) {
+    telegramId = tg.initDataUnsafe.user.id.toString();
+    firstName = tg.initDataUnsafe.user.first_name || '';
+    username = tg.initDataUnsafe.user.username || '';
+    log('Using initDataUnsafe: ' + telegramId);
+  } else if (tg && tg.initData) {
+    try {
+      const params = new URLSearchParams(tg.initData);
+      const userStr = params.get('user');
+      if (userStr) {
+        const u = JSON.parse(userStr);
+        telegramId = u.id.toString();
+        firstName = u.first_name || '';
+        username = u.username || '';
+        log('Using parsed initData: ' + telegramId);
+      }
+    } catch(e) { log('Parse error: ' + e.message); }
+  }
+  
+  if (telegramId === '0') {
+    telegramId = '5640479009';
+    firstName = 'Admin Test';
+    log('Using fallback ID: ' + telegramId);
+  }
+  
+  log('Registering: ' + telegramId + ' / ' + firstName);
+  
+  try {
+    const r = await fetch(API + '/api/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ telegramId, firstName, username })
+    });
+    const d = await r.json();
+    el.innerHTML = '<span class="ok">✅ Register OK</span><br><pre>' + JSON.stringify(d, null, 2) + '</pre>';
+    log('Register: OK');
+  } catch(e) {
+    el.innerHTML = '<span class="err">❌ Register FAILED: ' + e.message + '</span>';
+    log('Register FAILED: ' + e.message);
+  }
+}
+
+async function testTasks() {
+  log('Testing tasks...');
+  try {
+    const r = await fetch(API + '/api/tasks');
+    const d = await r.json();
+    log('Tasks: ' + JSON.stringify(d));
+    document.getElementById('log').textContent += JSON.stringify(d, null, 2) + '\n';
+  } catch(e) {
+    log('Tasks FAILED: ' + e.message);
+  }
+}
+
+// Auto-run tests
+setTimeout(testAPI, 500);
+setTimeout(testRegister, 1500);
+</script>
+</body>
+</html>
