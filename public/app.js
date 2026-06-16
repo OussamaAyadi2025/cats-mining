@@ -1,5 +1,4 @@
-const API = 'https://cats-mining-backend.onrender.com';
-const DEBUG = true; // SET TO BACKEND URL e.g. https://cats-mining-backend.onrender.com
+const API = 'https://cats-mining-backend.onrender.com'; // SET TO BACKEND URL e.g. https://cats-mining-backend.onrender.com
 const tg = window.Telegram && window.Telegram.WebApp;
 let userData = null;
 let pendingInterval = null;
@@ -11,18 +10,34 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (saved && LANGS[saved]) currentLang = saved;
   renderAll();
   
-  // Check if inside Telegram
-  if (!tg || !tg.initDataUnsafe || !tg.initDataUnsafe.user) {
-    // Try to get from URL params or use test mode
-    const urlParams = new URLSearchParams(window.location.search);
-    const testId = urlParams.get('id');
-    if (testId) {
-      await registerWithId(testId, 'Test User', '');
-    }
+  // Try Telegram user data
+  if (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) {
+    await registerUser();
     return;
   }
   
-  await registerUser();
+  // Fallback: try Telegram initData parsing
+  if (tg && tg.initData) {
+    try {
+      const params = new URLSearchParams(tg.initData);
+      const userStr = params.get('user');
+      if (userStr) {
+        const u = JSON.parse(userStr);
+        await registerWithId(u.id.toString(), u.first_name || '', u.username || '', u.photo_url || '', '');
+        return;
+      }
+    } catch(e) {}
+  }
+
+  // Fallback: URL param for testing
+  const urlParams = new URLSearchParams(window.location.search);
+  const testId = urlParams.get('id');
+  if (testId) {
+    await registerWithId(testId, 'Test', '', '', '');
+    return;
+  }
+
+  toast('⚠️ Open from @MiningCatsBot in Telegram');
 });
 
 // ============ REGISTER & FETCH USER ============
