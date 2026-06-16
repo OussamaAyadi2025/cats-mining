@@ -1,4 +1,5 @@
-const API = 'https://cats-mining-backend.onrender.com'; // SET TO BACKEND URL e.g. https://cats-mining-backend.onrender.com
+const API = 'https://cats-mining-backend.onrender.com';
+const DEBUG = true; // SET TO BACKEND URL e.g. https://cats-mining-backend.onrender.com
 const tg = window.Telegram && window.Telegram.WebApp;
 let userData = null;
 let pendingInterval = null;
