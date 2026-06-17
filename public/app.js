@@ -16,8 +16,7 @@ try {
     const btn = document.getElementById('wallet-btn');
     const txt = document.getElementById('wallet-text');
     if (w) {
-      const a = w.account.address;
-      txt.textContent = a.slice(0,4)+'...'+a.slice(-4);
+      txt.textContent = '✅ Wallet';
       btn.classList.add('connected');
     } else {
       txt.textContent = 'Connect';
@@ -227,8 +226,6 @@ function showBuyModal(miner, memo) {
   const modal = document.getElementById('withdraw-modal');
   const content = document.getElementById('withdraw-content');
   const connected = tonConnectUI && tonConnectUI.connected;
-  const addr = connected ? tonConnectUI.account.address : '';
-  const short = addr ? addr.slice(0,4)+'...'+addr.slice(-4) : '';
 
   content.innerHTML = `
     <div style="text-align:center;margin-bottom:14px">
@@ -259,7 +256,7 @@ function showBuyModal(miner, memo) {
     <div class="pay-option" onclick="payWithWallet(${miner.price},'${memo}')">
       <div class="pay-opt-left">
         <div class="pay-opt-icon" style="background:linear-gradient(135deg,#0098EA,#0066BB)">💎</div>
-        <div><div class="pay-opt-title">Pay with Wallet</div><div class="pay-opt-sub">${short}</div></div>
+        <div><div class="pay-opt-title">Pay with Wallet</div><div class="pay-opt-sub">Connected ✅</div></div>
       </div>
       <div class="pay-opt-price">${miner.price} TON →</div>
     </div>` : `
