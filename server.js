@@ -72,10 +72,11 @@ const activeMinerSchema = new mongoose.Schema({
   daily: Number,
   totalReturn: Number,
   startedAt: { type: Date, default: Date.now },
+  startsEarningAt: Date,
   expiresAt: Date,
   status: { type: String, default: 'active', enum: ['active', 'expired'] },
   totalCollected: { type: Number, default: 0 },
-  lastCollected: { type: Date, default: Date.now }
+  lastCollected: Date
 });
 const ActiveMiner = mongoose.model('CatsMiningMiner', activeMinerSchema);
 
@@ -236,6 +237,8 @@ app.post('/api/miners/buy', async (req, res) => {
       const existing = await ActiveMiner.findOne({ telegramId: telegramId.toString(), minerId: 'miner_0' });
       if (existing) return res.status(400).json({ error: 'Already claimed free miner' });
 
+      const now = new Date();
+      const startsEarning = new Date(now.getTime() + 24 * 60 * 60 * 1000);
       const miner = new ActiveMiner({
         telegramId: telegramId.toString(),
         minerId: minerConfig.id,
@@ -244,7 +247,8 @@ app.post('/api/miners/buy', async (req, res) => {
         price: 0,
         daily: minerConfig.daily,
         totalReturn: minerConfig.total,
-        expiresAt: new Date(Date.now() + minerConfig.days * 24 * 60 * 60 * 1000)
+        startsEarningAt: startsEarning,
+        expiresAt: new Date(startsEarning.getTime() + minerConfig.days * 24 * 60 * 60 * 1000)
       });
       await miner.save();
       return res.json({ success: true, miner, type: 'free' });
@@ -293,9 +297,16 @@ app.post('/api/miners/collect', async (req, res) => {
         continue;
       }
 
-      // Calculate earnings since last collect
-      const lastCollect = miner.lastCollected || miner.startedAt;
-      const hoursSince = (now - lastCollect) / (1000 * 60 * 60);
+      // Check if still in 24h warmup
+      if (miner.startsEarningAt && now < miner.startsEarningAt) {
+        continue;
+      }
+
+      // Calculate earnings since last collect (or since startsEarningAt)
+      const earnStart = miner.startsEarningAt || miner.startedAt;
+      const lastCollect = miner.lastCollected || earnStart;
+      const effectiveStart = lastCollect < earnStart ? earnStart : lastCollect;
+      const hoursSince = (now - effectiveStart) / (1000 * 60 * 60);
       const earned = (miner.daily / 24) * hoursSince;
 
       if (earned > 0.0001) {
@@ -326,17 +337,28 @@ app.get('/api/miners/pending/:telegramId', async (req, res) => {
     const miners = await ActiveMiner.find({ telegramId: req.params.telegramId, status: 'active' });
     let totalPending = 0;
     let dailyProfit = 0;
+    let activeCount = 0;
     const now = new Date();
 
     for (const miner of miners) {
       if (now >= miner.expiresAt) continue;
-      const lastCollect = miner.lastCollected || miner.startedAt;
-      const hoursSince = (now - lastCollect) / (1000 * 60 * 60);
+      
+      // Check if still in 24h warmup
+      if (miner.startsEarningAt && now < miner.startsEarningAt) {
+        activeCount++;
+        continue;
+      }
+
+      const earnStart = miner.startsEarningAt || miner.startedAt;
+      const lastCollect = miner.lastCollected || earnStart;
+      const effectiveStart = lastCollect < earnStart ? earnStart : lastCollect;
+      const hoursSince = (now - effectiveStart) / (1000 * 60 * 60);
       totalPending += (miner.daily / 24) * hoursSince;
       dailyProfit += miner.daily;
+      activeCount++;
     }
 
-    res.json({ success: true, pending: totalPending, dailyProfit, activeCount: miners.length });
+    res.json({ success: true, pending: totalPending, dailyProfit, activeCount });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -524,9 +546,10 @@ async function verifyDeposits() {
           dep.txHash = txHash;
           await dep.save();
 
-          // Activate miner
+          // Activate miner with 24h delay
           const minerConfig = MINERS_CONFIG.find(m => m.id === dep.minerId);
           if (minerConfig) {
+            const activateAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
             const miner = new ActiveMiner({
               telegramId: dep.telegramId,
               minerId: minerConfig.id,
@@ -535,7 +558,8 @@ async function verifyDeposits() {
               price: minerConfig.price,
               daily: minerConfig.daily,
               totalReturn: minerConfig.total,
-              expiresAt: new Date(Date.now() + minerConfig.days * 24 * 60 * 60 * 1000)
+              startsEarningAt: activateAt,
+              expiresAt: new Date(activateAt.getTime() + minerConfig.days * 24 * 60 * 60 * 1000)
             });
             await miner.save();
 

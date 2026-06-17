@@ -6,6 +6,7 @@
 <title>Cats Mining</title>
 <link rel="stylesheet" href="style.css">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://unpkg.com/@tonconnect/ui@2.0.6/dist/tonconnect-ui.min.js"></script>
 </head>
 <body>
 <div id="app">
@@ -13,7 +14,7 @@
   <!-- HEADER -->
   <div class="header">
     <div class="header-left">
-      <div class="logo"><img src="images/logo.png" alt="Cats Mining" style="width:36px;height:36px;border-radius:50%;object-fit:cover" onerror="this.style.display='none';this.parentElement.textContent='⛏️'"></div>
+      <div class="logo"><img src="images/logo.png" alt="Cats Mining" onerror="this.parentElement.textContent='⛏️'"></div>
       <div>
         <div class="app-name">Cats Mining</div>
         <div class="app-sub" id="app-sub">Mine with your cats</div>
@@ -21,8 +22,11 @@
     </div>
     <div class="header-right">
       <div class="lang-btn" id="lang-btn" onclick="toggleLangMenu()">🇬🇧</div>
+      <div class="wallet-btn" id="wallet-btn" onclick="connectWallet()">
+        <span id="wallet-text">Connect</span>
+      </div>
       <div class="balance-pill">
-        <div class="bal-dot"></div>
+        <div class="bal-icon"><img src="images/ton-coin.png" alt="TON" onerror="this.parentElement.innerHTML='💎'"></div>
         <span id="balance-display">0.00 TON</span>
       </div>
     </div>

@@ -1,7 +1,42 @@
-const API = 'https://cats-mining-backend.onrender.com'; // SET TO BACKEND URL e.g. https://cats-mining-backend.onrender.com
+const API = 'https://cats-mining-backend.onrender.com';
 const tg = window.Telegram && window.Telegram.WebApp;
 let userData = null;
 let pendingInterval = null;
+let tonConnectUI = null;
+
+// ============ TON CONNECT ============
+try {
+  tonConnectUI = new TON_CONNECT_UI.TonConnectUI({
+    manifestUrl: 'https://cats-mining.vercel.app/tonconnect-manifest.json',
+    buttonRootId: null
+  });
+  tonConnectUI.onStatusChange(wallet => updateWalletUI(wallet));
+} catch(e) { console.error('TON Connect:', e); }
+
+function updateWalletUI(wallet) {
+  const btn = document.getElementById('wallet-btn');
+  const text = document.getElementById('wallet-text');
+  if (wallet) {
+    const addr = wallet.account.address;
+    const short = addr.slice(0,4) + '...' + addr.slice(-4);
+    text.textContent = short;
+    btn.classList.add('connected');
+  } else {
+    text.textContent = 'Connect';
+    btn.classList.remove('connected');
+  }
+}
+
+async function connectWallet() {
+  if (!tonConnectUI) { toast('⚠️ TON Connect not available'); return; }
+  try {
+    if (tonConnectUI.connected) {
+      if (confirm('Disconnect wallet?')) await tonConnectUI.disconnect();
+    } else {
+      await tonConnectUI.openModal();
+    }
+  } catch(e) {}
+}
 
 // ============ INIT ============
 document.addEventListener('DOMContentLoaded', async () => {
@@ -180,7 +215,15 @@ function renderMiners() {
     else if (isFree) cardClass += ' free-card';
 
     let badge = '';
-    if (owned) badge = `<div class="miner-badge badge-active">${T('active')}</div>`;
+    if (owned) {
+      const activeMiner = userData.activeMiners.find(am => am.minerId === m.id);
+      if (activeMiner && activeMiner.startsEarningAt && new Date() < new Date(activeMiner.startsEarningAt)) {
+        const hoursLeft = Math.ceil((new Date(activeMiner.startsEarningAt) - new Date()) / 3600000);
+        badge = `<div class="miner-badge" style="background:rgba(245,166,35,.12);color:var(--gold);border:1px solid rgba(245,166,35,.2)">⏳ ${hoursLeft}h</div>`;
+      } else {
+        badge = `<div class="miner-badge badge-active">⛏️ ${T('active')}</div>`;
+      }
+    }
 
     let btnClass = 'buy-btn';
     let btnText = `⛏️ ${T('buyFor')} ${m.price} TON`;
@@ -223,13 +266,13 @@ async function buyMiner(minerId) {
     const d = await r.json();
 
     if (d.success && d.type === 'free') {
-      toast(`🐱 ${miner.name} ${T('active')}!`);
+      toast(`🐱 ${miner.name} activated! Starts earning in 24h`);
       await refreshUser();
       return;
     }
 
     if (d.success && d.type === 'deposit_required') {
-      showDepositModal(miner, d);
+      showBuyModal(miner, d);
       return;
     }
 
@@ -237,37 +280,170 @@ async function buyMiner(minerId) {
   } catch (e) { toast('⚠️ ' + T('error')); }
 }
 
-function showDepositModal(miner, data) {
+function showBuyModal(miner, data) {
   const modal = document.getElementById('withdraw-modal');
   const content = document.getElementById('withdraw-content');
+  const balance = userData ? userData.balance : 0;
+  const canPayBalance = balance >= miner.price;
+  const walletConnected = tonConnectUI && tonConnectUI.connected;
+  const walletAddr = walletConnected ? tonConnectUI.account?.address : null;
+  const shortAddr = walletAddr ? walletAddr.slice(0,4) + '...' + walletAddr.slice(-4) : '';
+
   content.innerHTML = `
-    <div class="modal-title">⛏️ ${T('buyFor')} ${miner.price} TON</div>
-    <div class="modal-warn" style="text-align:left">
-      <div style="margin-bottom:10px;font-size:14px;font-weight:600">${miner.name} — Lv.${miner.level}</div>
-      <div style="margin-bottom:6px">💰 ${T('daily')}: <span style="color:var(--gold)">${miner.daily} TON</span></div>
-      <div style="margin-bottom:6px">📅 ${T('contract')}: ${miner.days} ${T('days')}</div>
-      <div>💎 ${T('total')}: <span style="color:var(--green)">${miner.total} TON</span></div>
+    <div style="text-align:center;margin-bottom:16px">
+      <img src="images/miner-${miner.level}.png" style="width:80px;height:80px;border-radius:16px;box-shadow:0 4px 20px rgba(0,0,0,.4)" onerror="this.style.display='none'">
     </div>
-    <div class="modal-row">
-      <div class="modal-label">Send exactly <span style="color:var(--gold);font-weight:600">${miner.price} TON</span> to:</div>
-      <div class="modal-input" style="font-size:11px;word-break:break-all;cursor:pointer" onclick="copyWallet()">${data.walletAddress}</div>
+    <div style="text-align:center;margin-bottom:4px;font-size:18px;font-weight:700">${miner.name} <span style="color:var(--dim);font-size:14px">Lv.${miner.level}</span></div>
+    <div style="text-align:center;font-size:13px;color:var(--dim);margin-bottom:16px">${miner.days}-day contract · ${T('payback')} ~${miner.payback}${T('days')}</div>
+    
+    <div style="display:flex;gap:8px;margin-bottom:16px">
+      <div style="flex:1;background:var(--card);border-radius:10px;padding:10px;text-align:center">
+        <div style="font-size:10px;color:var(--dim);text-transform:uppercase">${T('daily')}</div>
+        <div style="font-size:15px;font-weight:700;color:var(--gold-light);margin-top:3px">${miner.daily} TON</div>
+      </div>
+      <div style="flex:1;background:var(--card);border-radius:10px;padding:10px;text-align:center">
+        <div style="font-size:10px;color:var(--dim);text-transform:uppercase">${T('total')}</div>
+        <div style="font-size:15px;font-weight:700;color:var(--green);margin-top:3px">${miner.total} TON</div>
+      </div>
+      <div style="flex:1;background:var(--card);border-radius:10px;padding:10px;text-align:center">
+        <div style="font-size:10px;color:var(--dim);text-transform:uppercase">Price</div>
+        <div style="font-size:15px;font-weight:700;margin-top:3px">${miner.price} TON</div>
+      </div>
     </div>
-    <div class="modal-row">
-      <div class="modal-label">Memo (REQUIRED):</div>
-      <div class="modal-input" style="font-size:14px;font-weight:600;color:var(--gold);cursor:pointer" onclick="copyMemo('${data.memo}')">${data.memo}</div>
-    </div>
-    <div class="modal-fee">⚠️ Include the memo or payment won't be detected!</div>
-    <button class="modal-btn" onclick="document.getElementById('withdraw-modal').style.display='none'">✅ I've sent the payment</button>`;
+
+    <div style="font-size:13px;font-weight:600;color:var(--dim);margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px">Payment Method</div>
+
+    ${walletConnected ? `
+      <button class="pay-option" onclick="payWithWallet(${miner.price},'${data.memo}')">
+        <div class="pay-option-left">
+          <div class="pay-option-icon" style="background:linear-gradient(135deg,#0098EA,#0077CC)">💎</div>
+          <div>
+            <div class="pay-option-title">Pay with Wallet</div>
+            <div class="pay-option-sub">${shortAddr}</div>
+          </div>
+        </div>
+        <div class="pay-option-amount">${miner.price} TON</div>
+      </button>
+    ` : `
+      <button class="pay-option" onclick="connectAndPay(${miner.price},'${data.memo}')">
+        <div class="pay-option-left">
+          <div class="pay-option-icon" style="background:linear-gradient(135deg,#0098EA,#0077CC)">🔗</div>
+          <div>
+            <div class="pay-option-title">Connect Wallet</div>
+            <div class="pay-option-sub">Tonkeeper, TonHub, MyTonWallet...</div>
+          </div>
+        </div>
+        <div class="pay-option-amount">${miner.price} TON</div>
+      </button>
+    `}
+
+    <button class="pay-option" onclick="showManualDeposit('${data.walletAddress}','${data.memo}',${miner.price})">
+      <div class="pay-option-left">
+        <div class="pay-option-icon" style="background:linear-gradient(135deg,#f5a623,#e89520)">📋</div>
+        <div>
+          <div class="pay-option-title">Manual Transfer</div>
+          <div class="pay-option-sub">Copy address + memo</div>
+        </div>
+      </div>
+      <div class="pay-option-amount">${miner.price} TON</div>
+    </button>
+
+    <div style="text-align:center;margin-top:14px;font-size:11px;color:var(--dimmer)">⛏️ Miner starts earning 24h after payment verification</div>
+  `;
   modal.style.display = 'flex';
 }
 
-function copyWallet() {
-  navigator.clipboard.writeText(document.querySelector('.modal-input').textContent);
-  toast(T('copied'));
+async function connectAndPay(amount, memo) {
+  if (!tonConnectUI) { toast('⚠️ Not available'); return; }
+  try {
+    await tonConnectUI.openModal();
+    // Wait for connection
+    const checkConnection = setInterval(async () => {
+      if (tonConnectUI.connected) {
+        clearInterval(checkConnection);
+        await payWithWallet(amount, memo);
+      }
+    }, 1000);
+    setTimeout(() => clearInterval(checkConnection), 60000);
+  } catch(e) {}
 }
-function copyMemo(memo) {
-  navigator.clipboard.writeText(memo);
-  toast(T('copied') + ' — ' + memo);
+
+async function payWithWallet(amount, memo) {
+  if (!tonConnectUI || !tonConnectUI.connected) {
+    toast('⚠️ Connect wallet first');
+    return;
+  }
+  try {
+    const BOT_WALLET = 'UQBwLawv72AIQgdJwe9vX0Y9cvw_8IfgPCrlOtQUiENT9YoM';
+    const tx = {
+      validUntil: Math.floor(Date.now() / 1000) + 600,
+      messages: [{
+        address: BOT_WALLET,
+        amount: (amount * 1e9).toString(),
+        payload: btoa(memo)
+      }]
+    };
+    const result = await tonConnectUI.sendTransaction(tx);
+    toast('✅ Payment sent! Verifying...');
+    document.getElementById('withdraw-modal').style.display = 'none';
+    
+    // Show verification status
+    showVerifyingToast();
+    setTimeout(() => refreshUser(), 10000);
+  } catch(e) {
+    if (e.message && (e.message.includes('cancel') || e.message.includes('reject'))) {
+      toast('❌ Payment cancelled');
+    } else {
+      toast('⚠️ Payment failed: ' + (e.message || ''));
+    }
+  }
+}
+
+function showVerifyingToast() {
+  toast('⏳ Verifying payment... This may take 2-3 minutes');
+}
+
+function showManualDeposit(wallet, memo, amount) {
+  const content = document.getElementById('withdraw-content');
+  content.innerHTML = `
+    <div style="text-align:center;margin-bottom:16px">
+      <div style="font-size:40px">📋</div>
+      <div style="font-size:18px;font-weight:700;margin-top:8px">Manual Transfer</div>
+      <div style="font-size:13px;color:var(--dim);margin-top:4px">Send exactly ${amount} TON</div>
+    </div>
+
+    <div style="margin-bottom:14px">
+      <div style="font-size:11px;color:var(--dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Wallet Address</div>
+      <div class="copy-field" onclick="copyText('${wallet}')">
+        <span style="font-size:12px;word-break:break-all;flex:1">${wallet}</span>
+        <span style="font-size:18px;flex-shrink:0">📋</span>
+      </div>
+    </div>
+
+    <div style="margin-bottom:14px">
+      <div style="font-size:11px;color:var(--dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Memo (Required!)</div>
+      <div class="copy-field memo-field" onclick="copyText('${memo}')">
+        <span style="font-size:18px;font-weight:700;color:var(--gold-light);letter-spacing:2px;flex:1;text-align:center">${memo}</span>
+        <span style="font-size:18px;flex-shrink:0">📋</span>
+      </div>
+    </div>
+
+    <div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);border-radius:10px;padding:12px;margin-bottom:16px;text-align:center">
+      <span style="font-size:13px;color:#ef4444">⚠️ Without memo, payment cannot be detected!</span>
+    </div>
+
+    <button class="modal-btn" onclick="document.getElementById('withdraw-modal').style.display='none'">
+      ✅ I've sent ${amount} TON
+    </button>
+    <button class="modal-btn" onclick="showBuyModal(MINERS.find(m=>m.price===${amount}),{walletAddress:'${wallet}',memo:'${memo}'})" style="background:var(--card);color:var(--text);box-shadow:none;border:1px solid var(--border);margin-top:8px">
+      ← Back to payment options
+    </button>
+  `;
+}
+
+function copyText(text) {
+  navigator.clipboard.writeText(text);
+  toast('📋 Copied!');
 }
 
 // ============ COLLECT EARNINGS ============
@@ -332,10 +508,35 @@ async function loadTasks() {
 
 async function doTask(taskId, link, reward) {
   if (!userData) return;
+  
+  // Open link first
   if (link && link !== 'null' && link !== '#' && link !== '') {
     window.open(link, '_blank');
-    await new Promise(r => setTimeout(r, 3000));
   }
+  
+  // Show countdown on button
+  const btn = document.querySelector(`[onclick*="${taskId}"]`);
+  if (btn) {
+    btn.disabled = true;
+    let sec = 15;
+    btn.className = 'task-btn done';
+    btn.textContent = `⏳ ${sec}s`;
+    const timer = setInterval(() => {
+      sec--;
+      btn.textContent = `⏳ ${sec}s`;
+      if (sec <= 0) {
+        clearInterval(timer);
+        btn.className = 'task-btn claim';
+        btn.textContent = T('taskClaim');
+        btn.disabled = false;
+        btn.onclick = () => claimTask(taskId, reward);
+      }
+    }, 1000);
+  }
+}
+
+async function claimTask(taskId, reward) {
+  if (!userData) return;
   try {
     const r = await fetch(API + '/api/tasks/complete', {
       method: 'POST',
@@ -467,7 +668,7 @@ async function submitWithdraw() {
 function updateStats() {
   if (userData) {
     document.getElementById('balance-display').textContent = (userData.balance || 0).toFixed(2) + ' TON';
-    document.getElementById('ref-link').value = `https://t.me/CatsMiningBot?start=ref_${userData.telegramId}`;
+    document.getElementById('ref-link').value = `https://t.me/MiningCatsBot?start=ref_${userData.telegramId}`;
     document.getElementById('profile-name').textContent = userData.firstName || 'Player';
     document.getElementById('profile-id').textContent = 'ID: ' + userData.telegramId;
     document.getElementById('profile-avatar').textContent = userData.photoUrl ? '' : '🐱';
@@ -500,6 +701,9 @@ function sendRefChat() {
 function toast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg;
+  t.classList.remove('show');
+  void t.offsetWidth;
   t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 2500);
+  clearTimeout(window._toastTimer);
+  window._toastTimer = setTimeout(() => t.classList.remove('show'), 2500);
 }
