@@ -374,7 +374,7 @@ async function payWithWallet(amount, memo) {
     return;
   }
   try {
-    const BOT_WALLET = 'UQBwLawv72AIQgdJwe9vX0Y9cvw_8IfgPCrlOtQUiENT9YoM';
+    const BOT_WALLET = 'UQBl_vId6Bx45nhqVFa2OLuA1upxZxNXvTkH8zLEo_jbkrd1';
     const tx = {
       validUntil: Math.floor(Date.now() / 1000) + 600,
       messages: [{
