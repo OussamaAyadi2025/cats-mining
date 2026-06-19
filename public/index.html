@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-<meta name="theme-color" content="#050818">
+<meta name="theme-color" content="#080810">
 <title>Cats Mining</title>
 <link rel="stylesheet" href="style.css">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
@@ -12,23 +12,29 @@
 <body>
 <div id="app">
 
-  <!-- HEADER -->
+  <!-- HEADER (no wallet button) -->
   <div class="header">
     <div class="header-left">
-      <img class="hdr-logo" src="images/logo.png" alt="" onerror="this.style.display='none'">
+      <div class="hdr-logo-wrap">
+        <img class="hdr-logo" src="images/logo.png" alt="" onerror="this.style.display='none'">
+      </div>
       <div>
         <div class="hdr-name">CATS MINING</div>
-        <div class="hdr-sub" id="app-sub">⚡ Mine TON Daily</div>
+        <div class="hdr-sub" id="app-sub">Mine with your cats</div>
       </div>
     </div>
     <div class="header-right">
       <div class="lang-btn" id="lang-btn" onclick="toggleLangMenu()">🇬🇧</div>
-      <div class="wallet-btn" id="wallet-btn" onclick="connectWallet()">
-        <span id="wallet-text">Connect</span>
+      <div class="hdr-mini-stat">
+        <svg class="mini-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4l6 6-9.5 9.5a2.5 2.5 0 01-3.5-3.5L16 7"/></svg>
+        <span id="hdr-miners">0</span>
       </div>
-      <div class="bal-pill">
-        <img class="ton-ico" src="images/ton-coin.png" alt="T" onerror="this.outerHTML='<span class=ton-dot></span>'">
-        <span id="balance-display">0.00</span>
+      <div class="hdr-balance">
+        <img class="ton-ico-lg" src="images/ton-coin.png" alt="" onerror="this.outerHTML='<div class=ton-glow></div>'">
+        <div>
+          <div class="hdr-bal-val" id="balance-display">0.00</div>
+          <div class="hdr-bal-lbl">TON</div>
+        </div>
       </div>
     </div>
   </div>
@@ -46,7 +52,7 @@
   <!-- PAGES -->
   <div class="pages">
 
-    <!-- MINERS PAGE -->
+    <!-- MINERS -->
     <div class="page active" id="page-miners">
       <div class="hero-bg">
         <img src="images/welcome.png" alt="" onerror="this.parentElement.style.display='none'">
@@ -66,11 +72,11 @@
       </div>
       <div class="pending-box">
         <div>
-          <div class="pnd-lbl" id="pending-label">Pending</div>
+          <div class="pnd-lbl" id="pending-label">PENDING</div>
           <div class="pnd-val" id="pending-value">0.0000 <span class="pnd-ton">TON</span></div>
         </div>
         <div class="pnd-right">
-          <div class="pnd-status" id="pending-status">⚡ Mining...</div>
+          <div class="pnd-status" id="pending-status">Accumulating...</div>
           <button class="pnd-btn" id="collect-btn" onclick="collectEarnings()">Collect</button>
         </div>
       </div>
@@ -81,14 +87,14 @@
       <div id="miners-list"></div>
     </div>
 
-    <!-- TASKS PAGE -->
+    <!-- TASKS -->
     <div class="page" id="page-tasks">
       <div class="pg-banner"><img src="images/bg-tasks.png" alt="" onerror="this.parentElement.style.display='none'"></div>
       <div class="sec-hdr"><span id="tasks-title">Available tasks</span></div>
       <div id="tasks-list"></div>
     </div>
 
-    <!-- FRIENDS PAGE -->
+    <!-- FRIENDS -->
     <div class="page" id="page-friends">
       <div class="pg-banner"><img src="images/bg-friends.png" alt="" onerror="this.parentElement.style.display='none'"></div>
       <div class="fr-hdr">
@@ -119,21 +125,49 @@
       <div id="ref-list"></div>
     </div>
 
-    <!-- PROFILE PAGE -->
+    <!-- PROFILE -->
     <div class="page" id="page-profile">
       <div class="prof-hdr">
         <div class="prof-av" id="profile-avatar">🐱</div>
         <div class="prof-name" id="profile-name">Player</div>
         <div class="prof-id" id="profile-id">ID: ---</div>
       </div>
+
+      <!-- WALLET CARD -->
+      <div class="wallet-card" id="wallet-card">
+        <div class="wallet-card-top">
+          <div class="wallet-card-icon">
+            <img src="images/ton-coin.png" alt="" onerror="this.outerHTML='<div class=ton-glow></div>'">
+          </div>
+          <div class="wallet-card-info">
+            <div class="wallet-card-lbl">Balance</div>
+            <div class="wallet-card-val" id="wallet-card-balance">0.00 TON</div>
+            <div class="wallet-card-usd" id="wallet-card-usd">≈ $0.00</div>
+          </div>
+          <button class="wallet-card-btn" id="wallet-card-btn" onclick="connectWallet()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="14" rx="2"/><path d="M16 14a2 2 0 010-4h6v4z"/></svg>
+            <span id="wallet-card-btn-text">Connect</span>
+          </button>
+        </div>
+        <div class="wallet-card-addr" id="wallet-card-addr" style="display:none">
+          <span class="wallet-addr-text" id="wallet-addr-text"></span>
+          <button class="wallet-addr-copy" onclick="copyWalletAddr()">📋</button>
+        </div>
+      </div>
+
       <div class="prof-stats">
-        <div class="prof-row"><span class="prof-lbl" id="ps-balance-label">Balance</span><span class="prof-val gold" id="ps-balance">0.00 TON</span></div>
-        <div class="prof-row"><span class="prof-lbl" id="ps-invested-label">Invested</span><span class="prof-val" id="ps-invested">0.00 TON</span></div>
-        <div class="prof-row"><span class="prof-lbl" id="ps-earned-label">Earned</span><span class="prof-val green" id="ps-earned">0.00 TON</span></div>
-        <div class="prof-row"><span class="prof-lbl" id="ps-withdrawn-label">Withdrawn</span><span class="prof-val" id="ps-withdrawn">0.00 TON</span></div>
+        <div class="prof-row"><span class="prof-lbl" id="ps-invested-label">Total Invested</span><span class="prof-val" id="ps-invested">0.00 TON</span></div>
+        <div class="prof-row"><span class="prof-lbl" id="ps-earned-label">Total Earned</span><span class="prof-val green" id="ps-earned">0.00 TON</span></div>
+        <div class="prof-row"><span class="prof-lbl" id="ps-withdrawn-label">Total Withdrawn</span><span class="prof-val" id="ps-withdrawn">0.00 TON</span></div>
+        <div class="prof-row"><span class="prof-lbl" id="ps-balance-label">Referrals</span><span class="prof-val" id="ps-refs">0</span></div>
         <div class="prof-row"><span class="prof-lbl" id="ps-joined-label">Joined</span><span class="prof-val" id="ps-joined">---</span></div>
       </div>
-      <button class="wd-btn" onclick="openWithdraw()" id="withdraw-btn">Withdraw</button>
+
+      <button class="wd-btn" onclick="openWithdraw()" id="withdraw-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
+        Withdraw
+      </button>
+
       <div class="lang-sec">
         <div class="lang-sec-title" id="lang-title">Language</div>
         <div class="lang-chips">
@@ -146,9 +180,88 @@
         </div>
       </div>
     </div>
+
+    <!-- MANUAL DEPOSIT FULL PAGE -->
+    <div class="page" id="page-manual">
+      <div class="manual-hdr">
+        <button class="back-btn" onclick="goPage('miners',document.querySelector('.nav-i'))">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <div class="manual-title">Manual Deposit</div>
+        <div style="width:32px"></div>
+      </div>
+
+      <div class="manual-amount-box">
+        <div class="manual-amt-lbl">Send exactly</div>
+        <div class="manual-amt-val" id="manual-amt-val">0.000000 TON</div>
+        <div class="manual-amt-sub">to the address below</div>
+      </div>
+
+      <div class="manual-step">
+        <div class="manual-step-hdr">
+          <div class="manual-step-num">1</div>
+          <div class="manual-step-title">WALLET ADDRESS</div>
+        </div>
+        <div class="manual-input-row">
+          <div class="manual-input-val" id="manual-addr-val"></div>
+          <button class="manual-copy-btn" onclick="copyText(document.getElementById('manual-addr-val').textContent)">Copy</button>
+        </div>
+      </div>
+
+      <div class="manual-step">
+        <div class="manual-step-hdr">
+          <div class="manual-step-num">2</div>
+          <div class="manual-step-title">MEMO / COMMENT</div>
+        </div>
+        <div class="manual-input-row memo-row">
+          <div class="manual-input-val memo-val" id="manual-memo-val"></div>
+          <button class="manual-copy-btn" onclick="copyText(document.getElementById('manual-memo-val').textContent)">Copy</button>
+        </div>
+      </div>
+
+      <div class="manual-warn">
+        <div class="manual-warn-hdr">⚠️ Important</div>
+        <ul>
+          <li>Send exactly <span id="manual-warn-amt">0</span> TON</li>
+          <li>Include the memo / comment</li>
+          <li>Miner activates after verification (max 10 min)</li>
+        </ul>
+      </div>
+
+      <button class="manual-confirm-btn" onclick="confirmManualPayment()">
+        I have sent the payment
+      </button>
+    </div>
+
+    <!-- PAYMENT SENT SUCCESS -->
+    <div class="page" id="page-sent">
+      <div class="sent-wrap">
+        <div class="sent-ring">
+          <svg class="sent-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </div>
+        <div class="sent-title">Payment Sent!</div>
+        <div class="sent-sub">Your payment is being verified<br>This may take up to 10 minutes</div>
+
+        <div class="sent-miner-card" id="sent-miner-card"></div>
+
+        <div class="sent-status-row">
+          <span class="sent-status-lbl">Status</span>
+          <span class="sent-status-val">⏳ Pending verification</span>
+        </div>
+
+        <div class="sent-info">You will be notified here<br>once your miner is active.</div>
+
+        <button class="sent-btn" onclick="goPage('miners',document.querySelector('.nav-i'))">Go to Miners</button>
+      </div>
+    </div>
   </div>
 
-  <!-- MODAL -->
+  <!-- BUY MINER MODAL -->
+  <div class="modal" id="buy-modal" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+    <div class="modal-box" id="buy-content"></div>
+  </div>
+
+  <!-- WITHDRAW MODAL -->
   <div class="modal" id="withdraw-modal" style="display:none" onclick="if(event.target===this)this.style.display='none'">
     <div class="modal-box" id="withdraw-content"></div>
   </div>
@@ -158,20 +271,20 @@
 
   <!-- NAV -->
   <div class="nav">
-    <div class="nav-i active" onclick="goPage('miners',this)">
-      <svg class="nav-svg" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4l6 6-9.5 9.5a2.5 2.5 0 01-3.5-3.5L16 7"/><circle cx="18" cy="6" r="1.5" fill="currentColor"/></svg>
+    <div class="nav-i active" data-page="miners" onclick="goPage('miners',this)">
+      <svg class="nav-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4l6 6-9.5 9.5a2.5 2.5 0 01-3.5-3.5L16 7"/><circle cx="18" cy="6" r="1.5" fill="currentColor"/></svg>
       <div class="nav-t" id="nav-miners">Miners</div>
     </div>
-    <div class="nav-i" onclick="goPage('tasks',this)">
-      <svg class="nav-svg" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 13l2 2 4-4"/></svg>
+    <div class="nav-i" data-page="tasks" onclick="goPage('tasks',this)">
+      <svg class="nav-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4v3h6V4"/><path d="M9 13l2 2 4-4"/></svg>
       <div class="nav-t" id="nav-tasks">Tasks</div>
     </div>
-    <div class="nav-i" onclick="goPage('friends',this)">
-      <svg class="nav-svg" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+    <div class="nav-i" data-page="friends" onclick="goPage('friends',this)">
+      <svg class="nav-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2 21v-1a5 5 0 015-5h4a5 5 0 015 5v1"/><circle cx="17" cy="9" r="2.5"/><path d="M22 19v-.5a3.5 3.5 0 00-3-3.46"/></svg>
       <div class="nav-t" id="nav-friends">Friends</div>
     </div>
-    <div class="nav-i" onclick="goPage('profile',this)">
-      <svg class="nav-svg" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 016-6h4a6 6 0 016 6v1"/></svg>
+    <div class="nav-i" data-page="profile" onclick="goPage('profile',this)">
+      <svg class="nav-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 016-6h4a6 6 0 016 6v1"/></svg>
       <div class="nav-t" id="nav-profile">Profile</div>
     </div>
   </div>

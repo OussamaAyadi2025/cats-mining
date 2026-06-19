@@ -5,6 +5,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
 let userData = null;
 let pendingInterval = null;
 let tonConnectUI = null;
+let currentBuyMiner = null;
+let currentBuyMemo = null;
 
 // ============ TON CONNECT ============
 try {
@@ -12,21 +14,29 @@ try {
     manifestUrl: 'https://cats-mining.vercel.app/tonconnect-manifest.json',
     buttonRootId: null
   });
-  tonConnectUI.onStatusChange(w => {
-    const btn = document.getElementById('wallet-btn');
-    const txt = document.getElementById('wallet-text');
-    if (w) {
-      txt.textContent = '✅ Wallet';
-      btn.classList.add('connected');
-    } else {
-      txt.textContent = 'Connect';
-      btn.classList.remove('connected');
-    }
-  });
-} catch(e) {}
+  tonConnectUI.onStatusChange(w => updateWalletUI(w));
+} catch(e) { console.error('TON Connect init error:', e); }
+
+function updateWalletUI(w) {
+  const btn = document.getElementById('wallet-card-btn');
+  const txt = document.getElementById('wallet-card-btn-text');
+  const addrBox = document.getElementById('wallet-card-addr');
+  const addrTxt = document.getElementById('wallet-addr-text');
+  if (w) {
+    const a = w.account.address;
+    txt.textContent = 'Disconnect';
+    btn.classList.add('connected');
+    addrTxt.textContent = a.slice(0,8) + '...' + a.slice(-6);
+    addrBox.style.display = 'flex';
+  } else {
+    txt.textContent = 'Connect';
+    btn.classList.remove('connected');
+    addrBox.style.display = 'none';
+  }
+}
 
 async function connectWallet() {
-  if (!tonConnectUI) return;
+  if (!tonConnectUI) { toast('⚠️ TON Connect not available'); return; }
   try {
     if (tonConnectUI.connected) {
       if (confirm('Disconnect wallet?')) await tonConnectUI.disconnect();
@@ -36,9 +46,14 @@ async function connectWallet() {
   } catch(e) {}
 }
 
+function copyWalletAddr() {
+  if (!tonConnectUI || !tonConnectUI.connected) return;
+  copyText(tonConnectUI.account.address);
+}
+
 // ============ INIT ============
 document.addEventListener('DOMContentLoaded', async () => {
-  if (tg) { tg.ready(); tg.expand(); tg.setHeaderColor('#0a0a10'); tg.setBackgroundColor('#0a0a10'); }
+  if (tg) { tg.ready(); tg.expand(); tg.setHeaderColor('#080810'); tg.setBackgroundColor('#080810'); }
   const saved = localStorage.getItem('cm_lang');
   if (saved && LANGS[saved]) currentLang = saved;
   renderAll();
@@ -89,7 +104,7 @@ async function refreshUser() {
   } catch(e) {}
 }
 
-// ============ PENDING COUNTER ============
+// ============ PENDING ============
 function startPendingCounter() {
   if (pendingInterval) clearInterval(pendingInterval);
   updatePending();
@@ -102,21 +117,26 @@ async function updatePending() {
     const r = await fetch(API+'/api/miners/pending/'+userData.telegramId);
     const d = await r.json();
     if (d.success) {
-      document.getElementById('pending-value').innerHTML = d.pending.toFixed(4)+' <span class="pending-ton">TON</span>';
+      document.getElementById('pending-value').innerHTML = d.pending.toFixed(4)+' <span class="pnd-ton">TON</span>';
       document.getElementById('stat-profit').textContent = d.dailyProfit.toFixed(3);
       document.getElementById('stat-miners').textContent = d.activeCount;
+      document.getElementById('hdr-miners').textContent = d.activeCount;
     }
   } catch(e) {}
 }
 
-// ============ NAVIGATION ============
+// ============ NAV ============
 function goPage(name, el) {
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  document.querySelectorAll('.nav-i').forEach(n=>n.classList.remove('active'));
   document.getElementById('page-'+name).classList.add('active');
-  if (el) el.classList.add('active');
+  // Find nav item by data-page
+  const navItem = document.querySelector('.nav-i[data-page="'+name+'"]');
+  if (navItem) navItem.classList.add('active');
+  else if (el) el.classList.add('active');
   if (name==='tasks') loadTasks();
   if (name==='friends') loadReferrals();
+  window.scrollTo(0,0);
 }
 
 function toggleLangMenu() {
@@ -130,9 +150,10 @@ document.addEventListener('click', e => {
 
 // ============ RENDER ALL ============
 function renderAll() {
+  if (typeof LANGS === 'undefined') return;
   const L = LANGS[currentLang];
   document.getElementById('lang-btn').textContent = L.flag;
-  document.getElementById('app-sub').textContent = T('appSub');
+  if (document.getElementById('app-sub')) document.getElementById('app-sub').textContent = T('appSub');
   document.getElementById('stat-profit-label').textContent = T('profitDay');
   document.getElementById('stat-miners-label').textContent = T('activeMiners');
   document.getElementById('pending-label').textContent = T('pending');
@@ -152,9 +173,8 @@ function renderAll() {
   document.getElementById('nav-tasks').textContent = T('tasks');
   document.getElementById('nav-friends').textContent = T('friends');
   document.getElementById('nav-profile').textContent = T('profile');
-  document.getElementById('withdraw-btn').textContent = T('withdraw');
+  if (document.getElementById('withdraw-btn')) document.getElementById('withdraw-btn').innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg> '+T('withdraw');
   document.getElementById('lang-title').textContent = T('language');
-  document.getElementById('ps-balance-label').textContent = T('balance');
   document.getElementById('ps-invested-label').textContent = T('totalInvested');
   document.getElementById('ps-earned-label').textContent = T('totalEarned');
   document.getElementById('ps-withdrawn-label').textContent = T('totalWithdrawn');
@@ -164,9 +184,10 @@ function renderAll() {
   updateStats();
 }
 
-// ============ RENDER MINERS ============
+// ============ MINERS ============
 function renderMiners() {
   const list = document.getElementById('miners-list');
+  if (!list) return;
   const ownedIds = [];
   if (userData && userData.activeMiners) userData.activeMiners.forEach(am=>ownedIds.push(am.minerId));
 
@@ -200,7 +221,7 @@ function renderMiners() {
   }).join('');
 }
 
-// ============ BUY MINER — 3 PAYMENT METHODS ============
+// ============ BUY MINER ============
 async function buyMiner(minerId) {
   if (!userData) { toast('⚠️ Open from Telegram!'); return; }
   const miner = MINERS.find(m=>m.id===minerId);
@@ -210,11 +231,13 @@ async function buyMiner(minerId) {
     const r = await fetch(API+'/api/miners/buy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({telegramId:userData.telegramId,minerId})});
     const d = await r.json();
     if (d.success && d.type==='free') {
-      toast('🐱 '+miner.name+' activated! Earning starts in 24h');
+      toast('🐱 '+miner.name+' activated! Starts earning in 24h');
       await refreshUser();
       return;
     }
     if (d.success && d.type==='deposit_required') {
+      currentBuyMiner = miner;
+      currentBuyMemo = d.memo;
       showBuyModal(miner, d.memo);
       return;
     }
@@ -223,83 +246,118 @@ async function buyMiner(minerId) {
 }
 
 function showBuyModal(miner, memo) {
-  const modal = document.getElementById('withdraw-modal');
-  const content = document.getElementById('withdraw-content');
+  const modal = document.getElementById('buy-modal');
+  const content = document.getElementById('buy-content');
+  const balance = userData ? (userData.balance||0) : 0;
+  const hasBalance = balance >= miner.price;
   const connected = tonConnectUI && tonConnectUI.connected;
 
   content.innerHTML = `
-    <div style="text-align:center;margin-bottom:14px">
-      <img src="images/miner-${miner.level}.png" style="width:80px;height:80px;border-radius:16px;box-shadow:0 4px 20px rgba(0,0,0,.5)" onerror="this.style.display='none'">
-    </div>
-    <div style="text-align:center;font-size:18px;font-weight:700;margin-bottom:2px">${miner.name} <span style="color:var(--dim);font-size:14px">Lv.${miner.level}</span></div>
-    <div style="text-align:center;font-size:12px;color:var(--dim);margin-bottom:14px">${miner.days}-day contract · Payback ~${miner.payback}d</div>
-
-    <div style="display:flex;gap:6px;margin-bottom:18px">
-      <div style="flex:1;background:var(--card);border-radius:10px;padding:10px;text-align:center">
-        <div style="font-size:9px;color:var(--dim);text-transform:uppercase">DAILY</div>
-        <div style="font-size:15px;font-weight:700;color:var(--gold-light);margin-top:2px">${miner.daily}</div>
-      </div>
-      <div style="flex:1;background:var(--card);border-radius:10px;padding:10px;text-align:center">
-        <div style="font-size:9px;color:var(--dim);text-transform:uppercase">TOTAL</div>
-        <div style="font-size:15px;font-weight:700;color:var(--green);margin-top:2px">${miner.total}</div>
-      </div>
-      <div style="flex:1;background:var(--card);border-radius:10px;padding:10px;text-align:center">
-        <div style="font-size:9px;color:var(--dim);text-transform:uppercase">PRICE</div>
-        <div style="font-size:15px;font-weight:700;margin-top:2px">${miner.price}</div>
-      </div>
+    <div class="buy-hero">
+      <img src="images/miner-${miner.level}.png" onerror="this.style.display='none'">
+      <div class="buy-name">${miner.name} <span class="lv">Lv.${miner.level}</span></div>
+      <div class="buy-sub">${miner.days}-day contract · Payback ~${miner.payback}d</div>
     </div>
 
-    <div style="font-size:12px;font-weight:700;color:var(--dim);margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px">Choose Payment Method</div>
-
-    <!-- METHOD 1: TON Connect Wallet -->
-    ${connected ? `
-    <div class="pay-option" onclick="payWithWallet(${miner.price},'${memo}')">
-      <div class="pay-opt-left">
-        <div class="pay-opt-icon" style="background:linear-gradient(135deg,#0098EA,#0066BB)">💎</div>
-        <div><div class="pay-opt-title">Pay with Wallet</div><div class="pay-opt-sub">Connected ✅</div></div>
+    <div class="buy-stats">
+      <div class="buy-stat">
+        <div class="buy-stat-lbl">DAILY</div>
+        <div class="buy-stat-val gold">${miner.daily}</div>
       </div>
-      <div class="pay-opt-price">${miner.price} TON →</div>
-    </div>` : `
-    <div class="pay-option" onclick="connectAndPay(${miner.price},'${memo}')">
-      <div class="pay-opt-left">
-        <div class="pay-opt-icon" style="background:linear-gradient(135deg,#0098EA,#0066BB)">🔗</div>
-        <div><div class="pay-opt-title">Connect Wallet & Pay</div><div class="pay-opt-sub">Tonkeeper, TonHub, MyTonWallet</div></div>
+      <div class="buy-stat">
+        <div class="buy-stat-lbl">TOTAL</div>
+        <div class="buy-stat-val green">${miner.total}</div>
       </div>
-      <div class="pay-opt-price">${miner.price} TON →</div>
-    </div>`}
-
-    <!-- METHOD 2: Manual Deposit -->
-    <div class="pay-option" onclick="showManualPage('${memo}',${miner.price},'${miner.name}')">
-      <div class="pay-opt-left">
-        <div class="pay-opt-icon" style="background:linear-gradient(135deg,#f5a623,#e88520)">📋</div>
-        <div><div class="pay-opt-title">Manual Deposit</div><div class="pay-opt-sub">Copy address + memo</div></div>
+      <div class="buy-stat">
+        <div class="buy-stat-lbl">PRICE</div>
+        <div class="buy-stat-val">${miner.price}</div>
       </div>
-      <div class="pay-opt-price">${miner.price} TON →</div>
     </div>
 
-    <div style="text-align:center;margin-top:12px;font-size:11px;color:var(--dimmer)">⛏️ Miner starts earning 24h after verification</div>
+    <div class="buy-section-lbl">Choose payment method</div>
+
+    <button class="buy-option blue" onclick="payOption1()">
+      <div class="buy-opt-left">
+        <div class="buy-opt-icon blue">
+          <svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="14" rx="2"/><path d="M16 14a2 2 0 010-4h6v4z"/></svg>
+        </div>
+        <div>
+          <div class="buy-opt-title">${connected?'Pay with Wallet':'Connect & Pay'}</div>
+          <div class="buy-opt-sub">${connected?'TON Connect · Instant':'Tonkeeper, TonHub, OpenMask'}</div>
+        </div>
+      </div>
+      <div class="buy-opt-right">
+        <div class="buy-opt-price">${miner.price} TON</div>
+        <div class="buy-opt-arrow">→</div>
+      </div>
+    </button>
+
+    <button class="buy-option green ${hasBalance?'':'disabled'}" ${hasBalance?'onclick="payOption2()"':''}>
+      <div class="buy-opt-left">
+        <div class="buy-opt-icon green">
+          <svg viewBox="0 0 24 24"><path d="M21 12V7H5a2 2 0 010-4h14v4"/><path d="M3 5v14a2 2 0 002 2h16v-5"/><circle cx="17" cy="14" r="2"/></svg>
+        </div>
+        <div>
+          <div class="buy-opt-title">Use Bot Balance</div>
+          <div class="buy-opt-sub">${hasBalance?'Balance: '+balance.toFixed(2)+' TON':'Insufficient: '+balance.toFixed(2)+' TON'}</div>
+        </div>
+      </div>
+      <div class="buy-opt-right">
+        <div class="buy-opt-price">${miner.price} TON</div>
+        <div class="buy-opt-arrow">→</div>
+      </div>
+    </button>
+
+    <button class="buy-option amber" onclick="payOption3()">
+      <div class="buy-opt-left">
+        <div class="buy-opt-icon amber">
+          <svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="13" rx="2"/><path d="M8 8V5a4 4 0 018 0v3"/><circle cx="12" cy="14" r="2"/></svg>
+        </div>
+        <div>
+          <div class="buy-opt-title">Manual Deposit</div>
+          <div class="buy-opt-sub">Send TON manually</div>
+        </div>
+      </div>
+      <div class="buy-opt-right">
+        <div class="buy-opt-price">${miner.price} TON</div>
+        <div class="buy-opt-arrow">→</div>
+      </div>
+    </button>
+
+    <div class="buy-info"><span class="ico">⛏️</span> Miner starts earning 24h after verification</div>
   `;
   modal.style.display = 'flex';
 }
 
-// ============ PAYMENT METHOD 1: TON CONNECT ============
-async function connectAndPay(amount, memo) {
-  if (!tonConnectUI) return;
-  try {
-    await tonConnectUI.openModal();
-    const check = setInterval(async()=>{
-      if (tonConnectUI.connected) { clearInterval(check); await payWithWallet(amount,memo); }
-    },1000);
-    setTimeout(()=>clearInterval(check),60000);
-  } catch(e) {}
+// ============ OPTION 1: TON Connect ============
+async function payOption1() {
+  if (!currentBuyMiner || !currentBuyMemo) return;
+  const amount = currentBuyMiner.price;
+  const memo = currentBuyMemo;
+
+  if (!tonConnectUI) { toast('⚠️ Wallet not available'); return; }
+
+  if (!tonConnectUI.connected) {
+    try {
+      await tonConnectUI.openModal();
+      const check = setInterval(async()=>{
+        if (tonConnectUI.connected) {
+          clearInterval(check);
+          await sendWalletPayment(amount, memo);
+        }
+      },1000);
+      setTimeout(()=>clearInterval(check),60000);
+    } catch(e) {}
+    return;
+  }
+  await sendWalletPayment(amount, memo);
 }
 
-async function payWithWallet(amount, memo) {
-  if (!tonConnectUI || !tonConnectUI.connected) { toast('⚠️ Connect wallet first'); return; }
+async function sendWalletPayment(amount, memo) {
   try {
-    // Add tiny unique decimal for transaction identification
-    const uniqueAmount = amount + (parseInt(memo.replace('CM','')) % 1000) / 1000000;
-    
+    const lastDigits = parseInt(userData.telegramId.slice(-4)) || 0;
+    const uniqueAmount = amount + (lastDigits / 1000000);
+
     await tonConnectUI.sendTransaction({
       validUntil: Math.floor(Date.now()/1000)+600,
       messages: [{
@@ -307,8 +365,8 @@ async function payWithWallet(amount, memo) {
         amount: Math.round(uniqueAmount * 1e9).toString()
       }]
     });
-    toast('✅ Payment sent! Verifying...');
-    document.getElementById('withdraw-modal').style.display='none';
+    document.getElementById('buy-modal').style.display='none';
+    showSentPage(currentBuyMiner);
     setTimeout(()=>refreshUser(),10000);
   } catch(e) {
     if (e.message && (e.message.includes('cancel')||e.message.includes('reject'))) toast('❌ Cancelled');
@@ -316,55 +374,61 @@ async function payWithWallet(amount, memo) {
   }
 }
 
-// ============ PAYMENT METHOD 2: MANUAL DEPOSIT ============
-function showManualPage(memo, amount, minerName) {
-  const content = document.getElementById('withdraw-content');
-  content.innerHTML = `
-    <div style="text-align:center;margin-bottom:18px">
-      <div style="width:56px;height:56px;border-radius:14px;background:linear-gradient(135deg,#f5a623,#e88520);margin:0 auto 10px;display:flex;align-items:center;justify-content:center;font-size:28px">📋</div>
-      <div style="font-size:18px;font-weight:700">Manual Deposit</div>
-      <div style="font-size:13px;color:var(--dim);margin-top:4px">Send exactly <span style="color:var(--gold-light);font-weight:700">${amount} TON</span> for ${minerName}</div>
-    </div>
+// ============ OPTION 2: Bot Balance ============
+async function payOption2() {
+  if (!currentBuyMiner) return;
+  if (!confirm('Use '+currentBuyMiner.price+' TON from your balance?')) return;
 
-    <div style="margin-bottom:16px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <span style="font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px">Wallet Address</span>
-        <span onclick="copyText('${BOT_WALLET}')" style="font-size:12px;color:var(--gold);cursor:pointer;font-weight:600">📋 Copy</span>
-      </div>
-      <div onclick="copyText('${BOT_WALLET}')" style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px;font-size:11px;word-break:break-all;color:var(--text);cursor:pointer;line-height:1.5">${BOT_WALLET}</div>
-    </div>
+  try {
+    const r = await fetch(API+'/api/miners/buy-balance',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({telegramId:userData.telegramId,minerId:currentBuyMiner.id})
+    });
+    const d = await r.json();
+    if (d.success) {
+      toast('✅ '+currentBuyMiner.name+' activated! Starts in 24h');
+      document.getElementById('buy-modal').style.display='none';
+      await refreshUser();
+    } else {
+      toast('⚠️ '+(d.error||'Error'));
+    }
+  } catch(e) { toast('⚠️ '+e.message); }
+}
 
-    <div style="margin-bottom:16px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <span style="font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px">Memo (Required!)</span>
-        <span onclick="copyText('${memo}')" style="font-size:12px;color:var(--gold);cursor:pointer;font-weight:600">📋 Copy</span>
-      </div>
-      <div onclick="copyText('${memo}')" style="background:linear-gradient(135deg,rgba(245,166,35,.1),var(--card));border:1px solid var(--gold-dim);border-radius:12px;padding:14px;font-size:20px;font-weight:700;color:var(--gold-light);text-align:center;letter-spacing:3px;cursor:pointer">${memo}</div>
-    </div>
+// ============ OPTION 3: Manual Deposit Page ============
+function payOption3() {
+  if (!currentBuyMiner || !currentBuyMemo) return;
+  document.getElementById('buy-modal').style.display='none';
 
-    <div style="margin-bottom:16px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <span style="font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px">Amount</span>
-        <span onclick="copyText('${amount}')" style="font-size:12px;color:var(--gold);cursor:pointer;font-weight:600">📋 Copy</span>
-      </div>
-      <div onclick="copyText('${amount}')" style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px;font-size:20px;font-weight:700;text-align:center;cursor:pointer">${amount} TON</div>
-    </div>
+  const lastDigits = parseInt(userData.telegramId.slice(-4)) || 0;
+  const uniqueAmount = currentBuyMiner.price + (lastDigits / 1000000);
 
-    <div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.15);border-radius:12px;padding:12px;margin-bottom:16px;text-align:center">
-      <span style="font-size:12px;color:#ef4444">⚠️ Without correct memo, payment cannot be verified!</span>
-    </div>
+  document.getElementById('manual-amt-val').textContent = uniqueAmount.toFixed(6)+' TON';
+  document.getElementById('manual-addr-val').textContent = BOT_WALLET;
+  document.getElementById('manual-memo-val').textContent = currentBuyMemo;
+  document.getElementById('manual-warn-amt').textContent = uniqueAmount.toFixed(6);
 
-    <button class="modal-btn" onclick="document.getElementById('withdraw-modal').style.display='none'">✅ I've sent ${amount} TON</button>
-    <div onclick="document.getElementById('withdraw-modal').style.display='none'" style="text-align:center;margin-top:10px;font-size:13px;color:var(--dim);cursor:pointer">Cancel</div>
+  goPage('manual', null);
+}
+
+function confirmManualPayment() {
+  showSentPage(currentBuyMiner);
+}
+
+function showSentPage(miner) {
+  const card = document.getElementById('sent-miner-card');
+  card.innerHTML = `
+    <img src="images/miner-${miner.level}.png" onerror="this.style.display='none'">
+    <div class="info">
+      <div class="name">${miner.name} <span style="color:var(--blue-l);font-size:11px;font-weight:700">Lv.${miner.level}</span></div>
+      <div class="price">${miner.price} TON</div>
+    </div>
   `;
+  goPage('sent', null);
 }
 
-function copyText(text) {
-  navigator.clipboard.writeText(text);
-  toast('📋 Copied!');
-}
-
-// ============ COLLECT EARNINGS ============
+// ============ COLLECT ============
 async function collectEarnings() {
   if (!userData) return;
   try {
@@ -375,7 +439,26 @@ async function collectEarnings() {
   } catch(e) { toast('⚠️ Error'); }
 }
 
-// ============ TASKS ============
+// ============ TASKS (with premium icons) ============
+const TASK_ICONS = {
+  't_daily': { color: 'green', svg: '<path d="M20 12v10H4V12"/><path d="M2 7h20v5H2z"/><path d="M12 22V7"/><path d="M12 7H7.5a2.5 2.5 0 010-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 000-5C13 2 12 7 12 7z"/>' },
+  't_news': { color: 'blue', svg: '<path d="M3 11l18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 11-5.8-1.6"/>' },
+  't_payouts': { color: 'amber', svg: '<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/>' },
+  't_miner': { color: 'amber', svg: '<path d="M14 4l6 6-9.5 9.5a2.5 2.5 0 01-3.5-3.5L16 7"/><circle cx="18" cy="6" r="1.5" fill="currentColor"/>' },
+  't_invite': { color: 'purple', svg: '<circle cx="9" cy="8" r="3.5"/><path d="M2 21v-1a5 5 0 015-5h4a5 5 0 015 5v1"/><circle cx="17" cy="9" r="2.5"/><path d="M22 19v-.5a3.5 3.5 0 00-3-3.46"/>' },
+  't_wallet': { color: 'blue', svg: '<rect x="2" y="6" width="20" height="14" rx="2"/><path d="M16 14a2 2 0 010-4h6v4z"/>' }
+};
+
+function getTaskIcon(taskId) {
+  if (TASK_ICONS[taskId]) return TASK_ICONS[taskId];
+  if (taskId.includes('daily')) return TASK_ICONS.t_daily;
+  if (taskId.includes('news')||taskId.includes('channel')) return TASK_ICONS.t_news;
+  if (taskId.includes('miner')) return TASK_ICONS.t_miner;
+  if (taskId.includes('invite')||taskId.includes('ref')) return TASK_ICONS.t_invite;
+  if (taskId.includes('wallet')) return TASK_ICONS.t_wallet;
+  return TASK_ICONS.t_news;
+}
+
 async function loadTasks() {
   try {
     const r = await fetch(API+'/api/tasks');
@@ -383,11 +466,21 @@ async function loadTasks() {
     if (!d.success) return;
 
     const canDaily = !userData||!userData.lastDaily||(Date.now()-new Date(userData.lastDaily).getTime())>=86400000;
-    let html = `<div class="task-card"><div class="task-icon">🎁</div><div class="task-info"><div class="task-name">${T('dailyReward')}</div><div class="task-reward">+0.005~0.015 TON</div></div>${canDaily?'<button class="task-btn claim" onclick="claimDaily()">'+T('claimDaily')+'</button>':'<div class="task-btn done">'+T('taskDone')+'</div>'}</div>`;
+    const dailyIco = TASK_ICONS.t_daily;
+    let html = `<div class="task-card">
+      <div class="task-icon ${dailyIco.color}"><svg viewBox="0 0 24 24">${dailyIco.svg}</svg></div>
+      <div class="task-info"><div class="task-name">${T('dailyReward')}</div><div class="task-reward">+ 0.005~0.015 TON</div></div>
+      ${canDaily?'<button class="task-btn claim" onclick="claimDaily()">'+T('claimDaily')+'</button>':'<div class="task-btn done">'+T('taskDone')+'</div>'}
+    </div>`;
 
     html += d.tasks.map(t=>{
       const done = userData&&userData.completedTasks&&userData.completedTasks.includes(t.taskId);
-      return '<div class="task-card"><div class="task-icon">'+t.icon+'</div><div class="task-info"><div class="task-name">'+t.title+'</div><div class="task-reward">+'+t.reward+' TON</div></div>'+(done?'<div class="task-btn done">'+T('taskDone')+'</div>':'<button class="task-btn go" onclick="doTask(\''+t.taskId+'\',\''+( t.link||'')+'\','+t.reward+')">'+T('taskGo')+'</button>')+'</div>';
+      const ico = getTaskIcon(t.taskId);
+      return `<div class="task-card">
+        <div class="task-icon ${ico.color}"><svg viewBox="0 0 24 24">${ico.svg}</svg></div>
+        <div class="task-info"><div class="task-name">${t.title}</div><div class="task-reward">+ ${t.reward} TON</div></div>
+        ${done?'<div class="task-btn done">'+T('taskDone')+'</div>':'<button class="task-btn go" onclick="doTask(\''+t.taskId+'\',\''+(t.link||'')+'\','+t.reward+')">'+T('taskGo')+'</button>'}
+      </div>`;
     }).join('');
 
     document.getElementById('tasks-list').innerHTML = html;
@@ -410,6 +503,7 @@ async function claimTask(taskId) {
     const r = await fetch(API+'/api/tasks/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({telegramId:userData.telegramId,taskId})});
     const d = await r.json();
     if (d.success) { toast('✅ +'+d.reward+' TON'); userData.balance=d.newBalance; userData.completedTasks.push(taskId); updateStats(); loadTasks(); }
+    else if (d.error==='NOT_MEMBER') toast('⚠️ Please join the channel first');
     else toast('⚠️ '+(d.error||'Error'));
   } catch(e) { toast('⚠️ Error'); }
 }
@@ -434,7 +528,10 @@ async function loadReferrals() {
     document.getElementById('ref-count').textContent = d.total;
     document.getElementById('ref-commission').textContent = d.commission.toFixed(2);
     if (d.referrals.length>0) {
-      document.getElementById('ref-list').innerHTML = d.referrals.map(ref=>'<div class="task-card"><div class="task-icon">👤</div><div class="task-info"><div class="task-name">'+(ref.firstName||'User')+'</div><div class="task-reward">'+(ref.isPaid?'✅ Paid':'⏳ Free')+'</div></div></div>').join('');
+      document.getElementById('ref-list').innerHTML = d.referrals.map(ref=>{
+        const ico = TASK_ICONS.t_invite;
+        return `<div class="task-card"><div class="task-icon purple"><svg viewBox="0 0 24 24">${ico.svg}</svg></div><div class="task-info"><div class="task-name">${ref.firstName||'User'}</div><div class="task-reward">${ref.isPaid?'✅ Paid':'⏳ Free'}</div></div></div>`;
+      }).join('');
     }
   } catch(e) {}
 }
@@ -445,11 +542,11 @@ function openWithdraw() {
   const content = document.getElementById('withdraw-content');
   content.innerHTML = `
     <div class="modal-title">${T('withdraw')}</div>
-    <div class="modal-row"><div class="modal-label">${T('balance')}: <span style="color:var(--gold-light)">${(userData?userData.balance:0).toFixed(2)} TON</span></div></div>
+    <div class="modal-row"><div class="modal-label">${T('balance')}: <span style="color:var(--amber-l)">${(userData?userData.balance:0).toFixed(2)} TON</span></div></div>
     <div class="modal-row"><div class="modal-label">${T('amount')}</div><input class="modal-input" type="number" id="w-amount" placeholder="1.5" min="1.5" step="0.1"></div>
     <div class="modal-row"><div class="modal-label">${T('walletAddress')}</div><input class="modal-input" type="text" id="w-wallet" placeholder="UQ..."></div>
-    <div class="modal-fee">${T('fee')}: 5% · ${T('minWithdraw')}</div>
-    <div id="w-preview" style="font-size:12px;color:var(--dim);margin-bottom:12px"></div>
+    <div class="modal-fee">${T('fee')}: 5% · Min: 1.5 TON</div>
+    <div id="w-preview" style="font-size:12px;color:var(--dm);margin-bottom:12px"></div>
     <button class="modal-btn" onclick="submitWithdraw()">${T('submit')}</button>`;
   document.getElementById('w-amount').addEventListener('input',function(){const a=parseFloat(this.value)||0;const fee=a*0.05;document.getElementById('w-preview').textContent=a>0?T('youReceive')+': '+(a-fee).toFixed(4)+' TON ('+T('fee')+': '+fee.toFixed(4)+')':'';});
   modal.style.display='flex';
@@ -467,9 +564,10 @@ async function submitWithdraw() {
     if (d.success) { toast('✅ '+T('withdrawSubmitted')); document.getElementById('withdraw-modal').style.display='none'; refreshUser(); }
     else {
       if (d.error==='DEPOSIT_REQUIRED') toast('🔒 '+T('depositRequired'));
-      else if (d.error==='REFS_REQUIRED') toast('🔒 '+T('refsRequired')+' ('+( d.current||0)+'/2)');
+      else if (d.error==='REFS_REQUIRED') toast('🔒 '+T('refsRequired')+' ('+(d.current||0)+'/2)');
       else if (d.error==='INSUFFICIENT') toast('⚠️ '+T('insufficientBalance'));
-      else if (d.error==='MIN_BALANCE') toast('⚠️ '+T('minWithdraw'));
+      else if (d.error==='MIN_AMOUNT') toast('⚠️ Min 1.5 TON');
+      else if (d.error==='PENDING_EXISTS') toast('⚠️ You have a pending withdrawal');
       else toast('⚠️ '+(d.message||d.error));
     }
   } catch(e) { toast('⚠️ Error'); }
@@ -478,15 +576,17 @@ async function submitWithdraw() {
 // ============ STATS ============
 function updateStats() {
   if (!userData) return;
-  document.getElementById('balance-display').textContent = (userData.balance||0).toFixed(2)+' TON';
+  document.getElementById('balance-display').textContent = (userData.balance||0).toFixed(2);
   document.getElementById('ref-link').value = 'https://t.me/'+BOT_USERNAME+'?start=ref_'+userData.telegramId;
   document.getElementById('profile-name').textContent = userData.firstName||'Player';
   document.getElementById('profile-id').textContent = 'ID: '+userData.telegramId;
-  if (userData.photoUrl) document.getElementById('profile-avatar').innerHTML='<img src="'+userData.photoUrl+'" style="width:72px;height:72px;border-radius:50%;border:2px solid var(--gold)">';
-  document.getElementById('ps-balance').textContent = (userData.balance||0).toFixed(2)+' TON';
+  if (userData.photoUrl) document.getElementById('profile-avatar').innerHTML='<img src="'+userData.photoUrl+'" onerror="this.style.display=\'none\'">';
+  document.getElementById('wallet-card-balance').textContent = (userData.balance||0).toFixed(4)+' TON';
+  document.getElementById('wallet-card-usd').textContent = '≈ $'+((userData.balance||0)*5).toFixed(2);
   document.getElementById('ps-invested').textContent = (userData.totalInvested||0).toFixed(2)+' TON';
   document.getElementById('ps-earned').textContent = (userData.totalEarned||0).toFixed(2)+' TON';
   document.getElementById('ps-withdrawn').textContent = (userData.totalWithdrawn||0).toFixed(2)+' TON';
+  if (document.getElementById('ps-refs')) document.getElementById('ps-refs').textContent = (userData.referrals||[]).length;
   document.getElementById('ps-joined').textContent = userData.createdAt?new Date(userData.createdAt).toLocaleDateString():'---';
 }
 
@@ -494,6 +594,7 @@ function updateStats() {
 function copyRefLink() { navigator.clipboard.writeText(document.getElementById('ref-link').value); toast(T('copied')); }
 function shareRef() { const l=document.getElementById('ref-link').value; if(tg) tg.openTelegramLink('https://t.me/share/url?url='+encodeURIComponent(l)+'&text='+encodeURIComponent('⛏️🐱 Join Cats Mining!')); }
 function sendRefChat() { const l=document.getElementById('ref-link').value; if(tg) tg.switchInlineQuery('⛏️🐱 '+l,['users']); }
+function copyText(text) { navigator.clipboard.writeText(text); toast('📋 Copied!'); }
 
 function toast(msg) {
   const t=document.getElementById('toast');

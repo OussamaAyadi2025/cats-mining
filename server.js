@@ -304,6 +304,70 @@ app.post('/api/miners/buy', async (req, res) => {
   }
 });
 
+// ============ API: BUY MINER WITH BOT BALANCE ============
+app.post('/api/miners/buy-balance', async (req, res) => {
+  try {
+    const { telegramId, minerId } = req.body;
+    const tgId = telegramId.toString();
+    const minerConfig = MINERS_CONFIG.find(m => m.id === minerId);
+    if (!minerConfig) return res.status(404).json({ error: 'MINER_NOT_FOUND' });
+    if (minerConfig.price === 0) return res.status(400).json({ error: 'FREE_MINER_USE_BUY' });
+
+    // Atomic: deduct balance only if sufficient
+    const updated = await User.findOneAndUpdate(
+      { telegramId: tgId, balance: { $gte: minerConfig.price }, banned: false },
+      { $inc: { balance: -minerConfig.price, totalInvested: minerConfig.price } },
+      { new: true }
+    );
+    if (!updated) return res.status(400).json({ error: 'INSUFFICIENT_BALANCE' });
+
+    // Activate miner with 24h delay
+    const activateAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const miner = new ActiveMiner({
+      telegramId: tgId,
+      minerId: minerConfig.id,
+      minerName: minerConfig.name,
+      level: minerConfig.level,
+      price: minerConfig.price,
+      daily: minerConfig.daily,
+      totalReturn: minerConfig.total,
+      startsEarningAt: activateAt,
+      expiresAt: new Date(activateAt.getTime() + minerConfig.days * 24 * 60 * 60 * 1000)
+    });
+    await miner.save();
+
+    console.log(`[MINER] ${tgId} bought ${minerConfig.name} with balance (${minerConfig.price} TON)`);
+
+    // Record as verified deposit (counts for withdrawal eligibility)
+    const memo = 'CM' + tgId + '_BAL_' + Date.now();
+    const deposit = new Deposit({
+      telegramId: tgId,
+      minerId: minerConfig.id,
+      amount: minerConfig.price,
+      memo,
+      status: 'verified',
+      txHash: 'BALANCE_' + Date.now(),
+      verifiedAt: new Date()
+    });
+    await deposit.save();
+
+    // Referral commission
+    if (updated.referredBy) {
+      const commission = minerConfig.price * 0.10;
+      await User.findOneAndUpdate(
+        { telegramId: updated.referredBy },
+        { $inc: { balance: commission, refCommission: commission, totalEarned: commission } }
+      );
+      console.log(`[REFERRAL] +${commission} TON to ${updated.referredBy}`);
+    }
+
+    res.json({ success: true, type: 'balance', miner });
+  } catch (error) {
+    console.error('[BUY-BALANCE]', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ============ API: COLLECT EARNINGS ============
 app.post('/api/miners/collect', async (req, res) => {
   try {
