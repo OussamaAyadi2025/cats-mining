@@ -179,28 +179,55 @@ bot.onText(/\/start(?:[\s_](.+))?/, async (msg, match) => {
 app.post('/api/register', async (req, res) => {
   try {
     const { telegramId, firstName, username, photoUrl, refBy } = req.body;
-    let user = await User.findOne({ telegramId: telegramId.toString() });
+    const tgId = telegramId.toString();
+    let user = await User.findOne({ telegramId: tgId });
 
     if (!user) {
-      user = new User({ telegramId: telegramId.toString(), firstName, username, photoUrl });
-      if (refBy) {
-        user.referredBy = refBy;
-        await User.findOneAndUpdate({ telegramId: refBy }, { $addToSet: { referrals: telegramId.toString() } });
+      user = new User({ telegramId: tgId, firstName, username, photoUrl });
+      
+      // Validate referral
+      if (refBy && refBy !== tgId) {  // prevent self-referral
+        const referrer = await User.findOne({ telegramId: refBy.toString() });
+        if (referrer && !referrer.banned) {
+          // Check if already in referrals (prevent duplicates)
+          if (!referrer.referrals.includes(tgId)) {
+            user.referredBy = refBy.toString();
+            await User.findOneAndUpdate(
+              { telegramId: refBy.toString() }, 
+              { $addToSet: { referrals: tgId } }
+            );
+            console.log(`[REFERRAL] New: ${tgId} → invited by ${refBy}`);
+          }
+        }
       }
       await user.save();
+      console.log(`[USER] New: ${tgId} (${firstName})`);
     } else {
+      // Auto-fix referral if missing
+      if (refBy && refBy !== tgId && !user.referredBy) {
+        const referrer = await User.findOne({ telegramId: refBy.toString() });
+        if (referrer && !referrer.banned && !referrer.referrals.includes(tgId)) {
+          user.referredBy = refBy.toString();
+          await User.findOneAndUpdate(
+            { telegramId: refBy.toString() }, 
+            { $addToSet: { referrals: tgId } }
+          );
+          console.log(`[REFERRAL] Late credit: ${tgId} → ${refBy}`);
+        }
+      }
       if (firstName) user.firstName = firstName;
       if (username) user.username = username;
       if (photoUrl) user.photoUrl = photoUrl;
       await user.save();
     }
 
-    const activeMiners = await ActiveMiner.find({ telegramId: telegramId.toString(), status: 'active' });
+    const activeMiners = await ActiveMiner.find({ telegramId: tgId, status: 'active' });
     const userObj = user.toObject();
     userObj.activeMiners = activeMiners;
 
     res.json({ success: true, user: userObj });
   } catch (error) {
+    console.error('[REGISTER] Error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -368,60 +395,66 @@ app.get('/api/miners/pending/:telegramId', async (req, res) => {
 app.post('/api/withdrawals/request', async (req, res) => {
   try {
     const { telegramId, amount, walletAddress } = req.body;
-    const user = await User.findOne({ telegramId: telegramId.toString() });
+    const tgId = telegramId.toString();
+    const amt = parseFloat(amount);
+
+    // Validate inputs
+    if (!tgId || !amt || amt <= 0) return res.status(400).json({ error: 'INVALID_INPUT' });
+    if (!walletAddress || walletAddress.length < 20) return res.status(400).json({ error: 'INVALID_WALLET' });
+
+    const user = await User.findOne({ telegramId: tgId });
     if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.banned) return res.status(403).json({ error: 'ACCOUNT_BANNED' });
 
-    if (user.banned) return res.status(403).json({ error: 'ACCOUNT_BANNED', message: 'Your account has been banned' });
+    // Prevent double withdrawal (check pending requests)
+    const pending = await Withdrawal.findOne({ telegramId: tgId, status: 'pending' });
+    if (pending) return res.status(400).json({ error: 'PENDING_EXISTS', message: 'You have a pending withdrawal' });
 
-    // CHECK 1: Must have bought at least 1 miner (verified deposit)
+    // CHECK 1: Must have verified deposit (unless bypassed)
     if (!user.withdrawBypass) {
       const verifiedDeposit = await Deposit.findOne({
-        telegramId: telegramId.toString(),
-        status: 'verified',
-        amount: { $gte: 0.5 }
+        telegramId: tgId, status: 'verified', amount: { $gte: 0.5 }
       });
-      if (!verifiedDeposit) {
-        return res.status(400).json({ error: 'DEPOSIT_REQUIRED', message: 'You must buy at least 1 miner first' });
-      }
+      if (!verifiedDeposit) return res.status(400).json({ error: 'DEPOSIT_REQUIRED' });
 
-      // CHECK 2: Must have 2 paid referrals
+      // CHECK 2: 2 paid referrals
       let paidRefs = 0;
       for (const refId of user.referrals) {
-        const paidDeposit = await Deposit.findOne({
-          telegramId: refId.toString(),
-          status: 'verified',
-          amount: { $gte: 0.5 }
-        });
-        if (paidDeposit) {
-          paidRefs++;
-          if (paidRefs >= 2) break;
-        }
+        const dep = await Deposit.findOne({ telegramId: refId.toString(), status: 'verified', amount: { $gte: 0.5 } });
+        if (dep) { paidRefs++; if (paidRefs >= 2) break; }
       }
-      if (paidRefs < 2) {
-        return res.status(400).json({ error: 'REFS_REQUIRED', current: paidRefs, required: 2 });
-      }
+      if (paidRefs < 2) return res.status(400).json({ error: 'REFS_REQUIRED', current: paidRefs, required: 2 });
     }
 
-    // CHECK 3: Amount
-    if (amount < 1.5) return res.status(400).json({ error: 'MIN_AMOUNT', message: 'Minimum withdrawal 1.5 TON' });
-    if (user.balance < 1.5) return res.status(400).json({ error: 'MIN_BALANCE', message: 'Minimum 1.5 TON balance' });
-    if (amount > user.balance) return res.status(400).json({ error: 'INSUFFICIENT' });
+    // CHECK 3: Amount limits
+    if (amt < 1.5) return res.status(400).json({ error: 'MIN_AMOUNT' });
+    if (amt > 1000) return res.status(400).json({ error: 'MAX_AMOUNT' });
 
-    const fee = amount * 0.05;
-    const netAmount = amount - fee;
+    const fee = amt * 0.05;
+    const netAmount = amt - fee;
 
+    // ATOMIC: deduct balance only if sufficient
+    const updated = await User.findOneAndUpdate(
+      { telegramId: tgId, balance: { $gte: amt }, banned: false },
+      { $inc: { balance: -amt } },
+      { new: true }
+    );
+    if (!updated) return res.status(400).json({ error: 'INSUFFICIENT' });
+
+    // Create withdrawal record
     const withdrawal = new Withdrawal({
-      telegramId: telegramId.toString(), amount, fee, netAmount, walletAddress
+      telegramId: tgId, amount: amt, fee, netAmount, walletAddress, status: 'pending'
     });
     await withdrawal.save();
-    await User.findOneAndUpdate({ telegramId: telegramId.toString() }, { $inc: { balance: -amount } });
+
+    console.log(`[WITHDRAW] User ${tgId} requested ${amt} TON to ${walletAddress.slice(0,10)}...`);
 
     // Notify admin
     const adminId = process.env.ADMIN_IDS;
     if (adminId) {
       try {
         await bot.sendMessage(adminId,
-          `💸 *Withdrawal Request*\n👤 ${user.firstName} (@${user.username})\n🆔 \`${telegramId}\`\n💰 ${amount} TON\n📤 Net: ${netAmount.toFixed(4)} TON\n📬 \`${walletAddress}\``,
+          `💸 *Withdrawal Request*\n👤 ${user.firstName} (@${user.username||'?'})\n🆔 \`${tgId}\`\n💰 ${amt} TON\n📤 Net: ${netAmount.toFixed(4)} TON\n📬 \`${walletAddress}\``,
           { parse_mode: 'Markdown' }
         );
       } catch (e) {}
@@ -429,6 +462,7 @@ app.post('/api/withdrawals/request', async (req, res) => {
 
     res.json({ success: true, withdrawal });
   } catch (error) {
+    console.error('[WITHDRAW] Error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -446,19 +480,41 @@ app.get('/api/tasks', async (req, res) => {
 app.post('/api/tasks/complete', async (req, res) => {
   try {
     const { telegramId, taskId } = req.body;
-    const user = await User.findOne({ telegramId: telegramId.toString() });
+    const tgId = telegramId.toString();
+    const user = await User.findOne({ telegramId: tgId });
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (user.banned) return res.status(403).json({ error: 'ACCOUNT_BANNED' });
-    if (user.completedTasks.includes(taskId)) return res.status(400).json({ error: 'Already completed' });
+    if (user.completedTasks.includes(taskId)) return res.status(400).json({ error: 'ALREADY_COMPLETED' });
 
     const task = await Task.findOne({ taskId, enabled: true });
-    if (!task) return res.status(404).json({ error: 'Task not found' });
+    if (!task) return res.status(404).json({ error: 'TASK_NOT_FOUND' });
+
+    // Verify channel membership if task has a channel link
+    if (task.link && task.link.includes('t.me/')) {
+      const match = task.link.match(/t\.me\/([+a-zA-Z0-9_]+)/);
+      if (match) {
+        const channel = '@' + match[1].replace('+', '');
+        try {
+          const member = await bot.getChatMember(channel, tgId);
+          const isMember = ['member', 'administrator', 'creator'].includes(member.status);
+          if (!isMember) {
+            console.log(`[TASK] ${tgId} not member of ${channel}, status=${member.status}`);
+            return res.status(400).json({ error: 'NOT_MEMBER', message: 'Please join the channel first' });
+          }
+          console.log(`[TASK] ${tgId} verified as member of ${channel}`);
+        } catch(e) {
+          // If bot is not admin in channel, trust the user (fallback)
+          console.log(`[TASK] Cannot verify ${channel}: ${e.message} - falling back to trust`);
+        }
+      }
+    }
 
     user.completedTasks.push(taskId);
     user.balance += task.reward;
     user.totalEarned += task.reward;
     await user.save();
 
+    console.log(`[TASK] ${tgId} completed ${taskId} +${task.reward} TON`);
     res.json({ success: true, reward: task.reward, newBalance: user.balance });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -522,75 +578,139 @@ async function verifyDeposits() {
     const pending = await Deposit.find({ status: 'pending' });
     if (!pending.length) return;
 
+    console.log(`[VERIFY] Checking ${pending.length} pending deposits...`);
+
     const apiKey = process.env.TONCENTER_KEY;
     const wallet = process.env.BOT_WALLET;
-    if (!apiKey || !wallet) return;
+    if (!apiKey) { console.log('[VERIFY] ❌ TONCENTER_KEY missing'); return; }
+    if (!wallet) { console.log('[VERIFY] ❌ BOT_WALLET missing'); return; }
 
     const response = await fetch(`https://toncenter.com/api/v2/getTransactions?address=${wallet}&limit=50&api_key=${apiKey}`);
     const data = await response.json();
-    if (!data.ok || !data.result) return;
+    if (!data.ok || !data.result) {
+      console.log('[VERIFY] ❌ Toncenter error:', data.error || 'no result');
+      return;
+    }
+
+    console.log(`[TON] Got ${data.result.length} transactions`);
 
     for (const tx of data.result) {
       const inMsg = tx.in_msg;
       if (!inMsg || !inMsg.value) continue;
       const amountTON = parseInt(inMsg.value) / 1e9;
-      const memo = inMsg.message || '';
+      if (amountTON < 0.1) continue; // skip tiny txs
+
+      const memo = (inMsg.message || '').trim();
       const txHash = tx.transaction_id?.hash || '';
+      const fromAddr = inMsg.source || '';
 
-      for (const dep of pending) {
-        if (memo.includes(dep.memo) && amountTON >= dep.amount * 0.95) {
-          const existing = await Deposit.findOne({ txHash });
-          if (existing && existing.status === 'verified') continue;
+      // Skip if this tx already processed
+      const txProcessed = await Deposit.findOne({ txHash, status: 'verified' });
+      if (txProcessed) continue;
 
-          dep.status = 'verified';
-          dep.txHash = txHash;
-          await dep.save();
+      console.log(`[TON] TX: ${amountTON} TON | memo="${memo}" | hash=${txHash.slice(0,8)}`);
 
-          // Activate miner with 24h delay
-          const minerConfig = MINERS_CONFIG.find(m => m.id === dep.minerId);
-          if (minerConfig) {
-            const activateAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-            const miner = new ActiveMiner({
-              telegramId: dep.telegramId,
-              minerId: minerConfig.id,
-              minerName: minerConfig.name,
-              level: minerConfig.level,
-              price: minerConfig.price,
-              daily: minerConfig.daily,
-              totalReturn: minerConfig.total,
-              startsEarningAt: activateAt,
-              expiresAt: new Date(activateAt.getTime() + minerConfig.days * 24 * 60 * 60 * 1000)
-            });
-            await miner.save();
+      let matchedDep = null;
+      let matchMethod = '';
 
-            await User.findOneAndUpdate(
-              { telegramId: dep.telegramId },
-              { $inc: { totalDeposited: amountTON, totalInvested: amountTON } }
-            );
-
-            // Referral commission (10%)
-            const user = await User.findOne({ telegramId: dep.telegramId });
-            if (user && user.referredBy) {
-              const commission = amountTON * 0.10;
-              await User.findOneAndUpdate(
-                { telegramId: user.referredBy },
-                { $inc: { balance: commission, refCommission: commission, totalEarned: commission } }
-              );
-            }
-
-            // Notify user
-            try {
-              await bot.sendMessage(dep.telegramId,
-                `✅ *Miner Activated!*\n\n⛏️ ${minerConfig.name} (Lv.${minerConfig.level})\n💰 Earns ${minerConfig.daily} TON/day\n📅 Contract: ${minerConfig.days} days\n💎 Total return: ${minerConfig.total} TON`,
-                { parse_mode: 'Markdown' }
-              );
-            } catch (e) {}
+      // METHOD 1: Match by memo
+      if (memo) {
+        for (const dep of pending) {
+          if (memo.includes(dep.memo) && amountTON >= dep.amount * 0.95) {
+            matchedDep = dep;
+            matchMethod = 'MEMO';
+            break;
           }
         }
       }
+
+      // METHOD 2: Match by unique decimal amount (TON Connect)
+      if (!matchedDep) {
+        for (const dep of pending) {
+          // Calculate expected unique amount for this user
+          const lastDigits = parseInt(dep.telegramId.slice(-4)) || 0;
+          const uniqueAmount = dep.amount + (lastDigits / 1000000);
+          const diff = Math.abs(amountTON - uniqueAmount);
+          if (diff < 0.0001) { // exact match
+            matchedDep = dep;
+            matchMethod = 'UNIQUE_AMOUNT';
+            break;
+          }
+        }
+      }
+
+      // METHOD 3: Match by exact amount (fallback)
+      if (!matchedDep) {
+        for (const dep of pending) {
+          const diff = Math.abs(amountTON - dep.amount);
+          if (diff < 0.01) { // within 0.01 TON
+            matchedDep = dep;
+            matchMethod = 'EXACT_AMOUNT';
+            break;
+          }
+        }
+      }
+
+      if (!matchedDep) {
+        console.log(`[VERIFY] ⚠️ No match for ${amountTON} TON`);
+        continue;
+      }
+
+      console.log(`[VERIFY] ✅ Matched ${matchedDep.memo} via ${matchMethod}`);
+
+      // Mark verified
+      matchedDep.status = 'verified';
+      matchedDep.txHash = txHash;
+      matchedDep.verifiedAt = new Date();
+      await matchedDep.save();
+
+      console.log(`[DEPOSIT] Verified: user=${matchedDep.telegramId} amount=${amountTON} miner=${matchedDep.minerId}`);
+
+      // Activate miner with 24h delay
+      const minerConfig = MINERS_CONFIG.find(m => m.id === matchedDep.minerId);
+      if (minerConfig) {
+        const activateAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        const miner = new ActiveMiner({
+          telegramId: matchedDep.telegramId,
+          minerId: minerConfig.id,
+          minerName: minerConfig.name,
+          level: minerConfig.level,
+          price: minerConfig.price,
+          daily: minerConfig.daily,
+          totalReturn: minerConfig.total,
+          startsEarningAt: activateAt,
+          expiresAt: new Date(activateAt.getTime() + minerConfig.days * 24 * 60 * 60 * 1000)
+        });
+        await miner.save();
+        console.log(`[MINER] ✅ Activated ${minerConfig.name} for ${matchedDep.telegramId}`);
+
+        await User.findOneAndUpdate(
+          { telegramId: matchedDep.telegramId },
+          { $inc: { totalDeposited: amountTON, totalInvested: amountTON } }
+        );
+
+        // Referral commission (10%)
+        const user = await User.findOne({ telegramId: matchedDep.telegramId });
+        if (user && user.referredBy) {
+          const commission = amountTON * 0.10;
+          await User.findOneAndUpdate(
+            { telegramId: user.referredBy },
+            { $inc: { balance: commission, refCommission: commission, totalEarned: commission } }
+          );
+          console.log(`[REFERRAL] +${commission.toFixed(4)} TON to ${user.referredBy}`);
+        }
+
+        // Notify user via bot
+        try {
+          await bot.sendMessage(matchedDep.telegramId,
+            `✅ *Payment Verified!*\n\n⛏️ ${minerConfig.name} (Lv.${minerConfig.level})\n💰 Daily: ${minerConfig.daily} TON\n⏳ Starts earning in 24h\n📅 Contract: ${minerConfig.days} days`,
+            { parse_mode: 'Markdown' }
+          );
+        } catch(e) { console.log('[BOT] Notify failed:', e.message); }
+      }
     }
-  } catch (e) {
-    console.error('Deposit check error:', e.message);
+  } catch (error) {
+    console.error('[VERIFY] Error:', error.message);
   }
 }
 
