@@ -516,7 +516,27 @@ body{
 
 ::-webkit-scrollbar{width:3px}
 ::-webkit-scrollbar-thumb{background:var(--bd-glow);border-radius:3px}
+body{
+  background:
+  linear-gradient(rgba(8,8,16,.75),rgba(8,8,16,.90)),
+  url('/images/bg-app.png');
 
+  background-size:cover;
+  background-position:center;
+  background-repeat:no-repeat;
+  background-attachment:fixed;
+}
+#app{
+  max-width:430px;
+  min-height:100vh;
+
+  background:
+  linear-gradient(rgba(8,8,16,.55),rgba(8,8,16,.85)),
+  url('/images/bg-app.png');
+
+  background-size:cover;
+  background-position:center;
+}
 @media (max-width:380px){
   .stat-val{font-size:18px}
   .pnd-val{font-size:20px}
