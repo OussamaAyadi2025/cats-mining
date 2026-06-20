@@ -16,7 +16,7 @@ const ICON = {
   diamond: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12l4 6-10 13L2 9z"/><path d="M11 3L8 9l4 13 4-13-3-6"/><path d="M2 9h20"/></svg>',
   wallet: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="14" rx="2"/><path d="M16 14a2 2 0 010-4h6v4z"/></svg>',
   // Mining
-  pickaxe: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2L14 6.5 8.5 12 4 7.5z"/><path d="M16 4l4 4"/><path d="M8.5 12l-6 6 2 2 6-6"/></svg>',
+  pickaxe: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18h16v-2a8 8 0 10-16 0v2z" fill="currentColor" opacity="0.2"/><path d="M4 18h16v-2a8 8 0 10-16 0v2z"/><circle cx="12" cy="14" r="1.5" fill="currentColor"/><path d="M12 9v2"/></svg>',
   // People
   user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 016-6h4a6 6 0 016 6v1"/></svg>',
   users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2 21v-1a5 5 0 015-5h4a5 5 0 015 5v1"/><circle cx="17" cy="9" r="2.5"/><path d="M22 19v-.5a3.5 3.5 0 00-3-3.46"/></svg>',
@@ -695,8 +695,10 @@ function updateStats() {
   // Set stat icons
   const profIco = document.getElementById('stat-ico-profit');
   const minersIco = document.getElementById('stat-ico-miners');
-  if (profIco && !profIco.innerHTML) profIco.innerHTML = ic('trending', 20);
-  if (minersIco && !minersIco.innerHTML) minersIco.innerHTML = ic('pickaxe', 20);
+  if (profIco && !profIco.innerHTML) profIco.innerHTML = ic('trending', 22);
+  if (minersIco && !minersIco.innerHTML) {
+    minersIco.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18h16v-2a8 8 0 10-16 0v2z" fill="currentColor" opacity="0.2"/><path d="M4 18h16v-2a8 8 0 10-16 0v2z"/><circle cx="12" cy="14" r="1.5" fill="currentColor"/><path d="M12 9v2"/></svg>';
+  }
   document.getElementById('wallet-card-balance').textContent = (userData.balance||0).toFixed(4)+' TON';
   document.getElementById('wallet-card-usd').textContent = '≈ $'+((userData.balance||0)*5).toFixed(2);
   document.getElementById('ps-invested').textContent = (userData.totalInvested||0).toFixed(2)+' TON';

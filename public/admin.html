@@ -121,6 +121,48 @@ textarea.inp{resize:vertical;min-height:90px;font-family:var(--mono);font-size:1
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);padding:12px 24px;background:linear-gradient(135deg,var(--green),#047857);color:#fff;border-radius:10px;font-weight:700;font-size:12px;z-index:999;display:none;box-shadow:0 8px 24px rgba(0,0,0,.4)}
 .toast.err{background:linear-gradient(135deg,var(--red),#b91c1c)}
 
+/* MODAL */
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);backdrop-filter:blur(8px);z-index:200;align-items:center;justify-content:center;padding:20px}
+.modal-bg.open{display:flex}
+.modal-content{background:linear-gradient(135deg,var(--card),var(--card2));border:1px solid var(--border);border-radius:16px;max-width:800px;width:100%;max-height:90vh;overflow-y:auto;padding:24px;position:relative}
+.modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--border)}
+.modal-header h3{font-size:18px;color:var(--amber-l);font-weight:800}
+.modal-close{background:var(--card2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:8px;font-size:20px;cursor:pointer;font-weight:700}
+.modal-close:hover{background:var(--red);border-color:var(--red)}
+
+.player-info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:18px}
+.player-info-item{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px}
+.player-info-item .lbl{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.8px;font-weight:700;margin-bottom:3px}
+.player-info-item .val{font-size:13px;color:var(--text);font-weight:700;word-break:break-all}
+.player-info-item .val.gold{color:var(--amber-l)}
+.player-info-item .val.green{color:var(--green)}
+.player-info-item .val.blue{color:var(--blue-l);font-family:var(--mono);font-size:11px}
+
+.miner-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:10px}
+.miner-card-adm{background:linear-gradient(135deg,var(--bg2),rgba(13,18,32,.4));border:1px solid var(--border);border-radius:10px;padding:12px;position:relative}
+.miner-card-adm.warmup{border-color:rgba(240,160,48,.4)}
+.miner-card-adm.active-m{border-color:rgba(16,185,129,.4)}
+.miner-card-adm.expired{opacity:.5}
+.miner-card-adm .mname{font-size:13px;font-weight:800;color:var(--amber-l);margin-bottom:5px}
+.miner-card-adm .mname .lv{font-size:10px;color:var(--blue-l);background:rgba(0,152,234,.15);padding:2px 6px;border-radius:5px;margin-left:5px}
+.miner-card-adm .minfo{font-size:10px;color:var(--dim);line-height:1.7}
+.miner-card-adm .minfo b{color:var(--text);font-weight:700}
+.miner-card-adm .mbadge{position:absolute;top:8px;right:8px;font-size:9px;padding:2px 6px;border-radius:4px;font-weight:800;text-transform:uppercase}
+.miner-card-adm .mbadge.active{background:rgba(16,185,129,.2);color:var(--green)}
+.miner-card-adm .mbadge.warm{background:rgba(240,160,48,.2);color:var(--amber-l)}
+.miner-card-adm .mbadge.exp{background:rgba(239,68,68,.2);color:var(--red)}
+
+.subsection{margin-top:18px}
+.subsection h4{font-size:12px;color:var(--blue-l);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;font-weight:800;padding-bottom:6px;border-bottom:1px solid var(--border)}
+
+.sec-item{background:var(--bg2);border:1px solid var(--border);border-left:3px solid var(--amber);border-radius:8px;padding:12px;margin-bottom:10px}
+.sec-item.high{border-left-color:var(--red)}
+.sec-item.medium{border-left-color:var(--amber)}
+.sec-item .sec-type{font-size:11px;color:var(--amber-l);font-weight:800;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+.sec-item .sec-type.high-c{color:var(--red)}
+.sec-item .sec-info{font-size:12px;color:var(--text)}
+.sec-item .sec-info span{color:var(--dim)}
+
 /* RESPONSIVE */
 @media(max-width:600px){
   .container{padding:10px}
@@ -158,7 +200,10 @@ textarea.inp{resize:vertical;min-height:90px;font-family:var(--mono);font-size:1
       <button class="tab" data-tab="withdrawals" onclick="showTab('withdrawals',this)">💸 Withdrawals</button>
       <button class="tab" data-tab="deposits" onclick="showTab('deposits',this)">💰 Deposits</button>
       <button class="tab" data-tab="referrals" onclick="showTab('referrals',this)">🔗 Referrals</button>
+      <button class="tab" data-tab="leaderboard" onclick="showTab('leaderboard',this)">🏆 Leaderboard</button>
       <button class="tab" data-tab="tasks" onclick="showTab('tasks',this)">📋 Tasks</button>
+      <button class="tab" data-tab="security" onclick="showTab('security',this)">🛡️ Security</button>
+      <button class="tab" data-tab="logs" data-tab="logs" onclick="showTab('logs',this)">📜 Audit Logs</button>
       <button class="tab" data-tab="tools" onclick="showTab('tools',this)">🔧 Tools</button>
       <button class="tab" data-tab="broadcast" onclick="showTab('broadcast',this)">📤 Broadcast</button>
     </div>
@@ -215,7 +260,44 @@ textarea.inp{resize:vertical;min-height:90px;font-family:var(--mono);font-size:1
       </div>
     </div>
 
-    <!-- TASKS -->
+    <!-- LEADERBOARD -->
+    <div class="panel" id="pan-leaderboard">
+      <div class="section">
+        <h3>🏆 Top Referrers</h3>
+        <div class="tbl-wrap"><table><thead><tr><th>Rank</th><th>User</th><th>Total Refs</th><th>Valid Refs</th><th>Deposits Generated</th><th>Commission</th></tr></thead><tbody id="lbBody"></tbody></table></div>
+      </div>
+    </div>
+
+    <!-- SECURITY -->
+    <div class="panel" id="pan-security">
+      <div class="section">
+        <h3>🛡️ Suspicious Activity</h3>
+        <p style="color:var(--dim);font-size:11px;margin-bottom:12px">Detected: Same IP referrals · Same wallet · Referral farming</p>
+        <div id="secBody"></div>
+      </div>
+    </div>
+
+    <!-- AUDIT LOGS -->
+    <div class="panel" id="pan-logs">
+      <div class="section">
+        <h3>📜 Admin Audit Logs</h3>
+        <div class="search-row">
+          <input class="inp" id="logSearch" placeholder="🔍 Search by player ID..." onkeydown="if(event.key==='Enter')loadLogs()">
+          <select class="inp" id="logFilter" onchange="loadLogs()" style="max-width:200px">
+            <option value="">All Actions</option>
+            <option value="BAN_PLAYER">Ban</option>
+            <option value="UNBAN_PLAYER">Unban</option>
+            <option value="GIVE_MINER">Give Miner</option>
+            <option value="MANUAL_DEPOSIT">Manual Deposit</option>
+            <option value="EDIT_BALANCE">Edit Balance</option>
+            <option value="APPROVE_WITHDRAWAL">Approve Withdraw</option>
+            <option value="REJECT_WITHDRAWAL">Reject Withdraw</option>
+            <option value="BYPASS_WITHDRAW">Bypass</option>
+          </select>
+        </div>
+        <div class="tbl-wrap"><table><thead><tr><th>Action</th><th>Target</th><th>Details</th><th>IP</th><th>Date</th></tr></thead><tbody id="logsBody"></tbody></table></div>
+      </div>
+    </div>
     <div class="panel" id="pan-tasks">
       <div class="section">
         <h3>📋 Active Tasks</h3>
@@ -308,6 +390,17 @@ textarea.inp{resize:vertical;min-height:90px;font-family:var(--mono);font-size:1
   </div>
 </div>
 
+<!-- PLAYER DETAILS MODAL -->
+<div class="modal-bg" id="playerModal" onclick="if(event.target===this)closePlayerModal()">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 id="modalPlayerName">Player Details</h3>
+      <button class="modal-close" onclick="closePlayerModal()">×</button>
+    </div>
+    <div id="modalPlayerBody"></div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -386,8 +479,196 @@ function showTab(t,el){
   else if(t==='withdrawals')loadWithdrawals();
   else if(t==='deposits')loadDeposits();
   else if(t==='referrals')loadReferrals();
+  else if(t==='leaderboard')loadLeaderboard();
+  else if(t==='security')loadSecurity();
+  else if(t==='logs')loadLogs();
   else if(t==='tasks')loadTasks();
   af('/api/admin/stats').then(function(d){if(d)renderStats(d)});
+}
+
+// ─── PLAYER MODAL ───
+async function openPlayerModal(id){
+  document.getElementById('playerModal').classList.add('open');
+  document.getElementById('modalPlayerName').textContent='Loading...';
+  document.getElementById('modalPlayerBody').innerHTML='<div style="text-align:center;padding:40px;color:var(--dim)">Loading player data...</div>';
+  var d=await af('/api/admin/player/'+id);
+  if(!d)return;
+  var u=d.user;
+  document.getElementById('modalPlayerName').innerHTML='👤 '+esc(u.firstName||'Player')+' <span style="color:var(--dim);font-size:13px;font-weight:400">('+u.telegramId+')</span>';
+
+  // Info grid
+  var html='<div class="player-info-grid">'+
+    '<div class="player-info-item"><div class="lbl">Telegram ID</div><div class="val blue">'+u.telegramId+'</div></div>'+
+    '<div class="player-info-item"><div class="lbl">Username</div><div class="val">@'+esc(u.username||'—')+'</div></div>'+
+    '<div class="player-info-item"><div class="lbl">First Name</div><div class="val">'+esc(u.firstName||'—')+'</div></div>'+
+    '<div class="player-info-item"><div class="lbl">Registered</div><div class="val">'+(u.createdAt?new Date(u.createdAt).toLocaleDateString():'—')+'</div></div>'+
+    '<div class="player-info-item"><div class="lbl">Balance</div><div class="val gold">'+(u.balance||0).toFixed(4)+' TON</div></div>'+
+    '<div class="player-info-item"><div class="lbl">Total Deposited</div><div class="val">'+(u.totalDeposited||0).toFixed(2)+' TON</div></div>'+
+    '<div class="player-info-item"><div class="lbl">Total Earned</div><div class="val green">'+(u.totalEarned||0).toFixed(2)+' TON</div></div>'+
+    '<div class="player-info-item"><div class="lbl">Total Withdrawn</div><div class="val">'+(u.totalWithdrawn||0).toFixed(2)+' TON</div></div>'+
+    '<div class="player-info-item"><div class="lbl">Total Referrals</div><div class="val">'+((u.referrals||[]).length)+'</div></div>'+
+    '<div class="player-info-item"><div class="lbl">Valid Referrals</div><div class="val green">'+d.validRefs+'</div></div>'+
+    '<div class="player-info-item"><div class="lbl">Ref Commission</div><div class="val gold">'+(u.refCommission||0).toFixed(4)+' TON</div></div>'+
+    '<div class="player-info-item"><div class="lbl">Status</div><div class="val">'+(u.banned?'<span class="badge banned">BANNED</span>':'<span class="badge active">Active</span>')+'</div></div>'+
+  '</div>';
+
+  // Owned miners
+  html+='<div class="subsection"><h4>⛏️ Owned Miners ('+d.miners.length+')</h4>';
+  if(d.miners.length===0){
+    html+='<div style="color:var(--dim);text-align:center;padding:20px">No miners owned</div>';
+  }else{
+    html+='<div class="miner-grid">';
+    for(var i=0;i<d.miners.length;i++){
+      var m=d.miners[i];
+      var now=new Date();
+      var warmupEnd=m.startsEarningAt?new Date(m.startsEarningAt):null;
+      var exp=m.expiresAt?new Date(m.expiresAt):null;
+      var isWarmup=warmupEnd&&now<warmupEnd;
+      var isExpired=m.status==='expired'||(exp&&now>exp);
+      var cls='miner-card-adm';
+      var badge='';
+      if(isExpired){cls+=' expired';badge='<span class="mbadge exp">Expired</span>';}
+      else if(isWarmup){cls+=' warmup';badge='<span class="mbadge warm">⏳ 24h</span>';}
+      else{cls+=' active-m';badge='<span class="mbadge active">✓ Active</span>';}
+      html+='<div class="'+cls+'">'+badge+
+        '<div class="mname">'+esc(m.minerName||'Miner')+' <span class="lv">Lv.'+(m.level||0)+'</span></div>'+
+        '<div class="minfo">'+
+          '<div><b>Daily:</b> '+(m.daily||0)+' TON</div>'+
+          '<div><b>Total Return:</b> '+(m.totalReturn||0)+' TON</div>'+
+          '<div><b>Price Paid:</b> '+(m.price||0)+' TON</div>'+
+          '<div><b>Purchased:</b> '+(m.createdAt?new Date(m.createdAt).toLocaleDateString():'—')+'</div>'+
+          '<div><b>Starts:</b> '+(m.startsEarningAt?new Date(m.startsEarningAt).toLocaleDateString():'—')+'</div>'+
+          '<div><b>Expires:</b> '+(m.expiresAt?new Date(m.expiresAt).toLocaleDateString():'—')+'</div>'+
+          '<div><b>Collected:</b> '+(m.totalCollected||0).toFixed(4)+' TON</div>'+
+        '</div>'+
+      '</div>';
+    }
+    html+='</div>';
+  }
+  html+='</div>';
+
+  // Deposits
+  html+='<div class="subsection"><h4>💰 Recent Deposits ('+d.deposits.length+')</h4>';
+  if(d.deposits.length===0){
+    html+='<div style="color:var(--dim);text-align:center;padding:14px">No deposits</div>';
+  }else{
+    html+='<div class="tbl-wrap"><table style="font-size:11px"><thead><tr><th>Amount</th><th>Status</th><th>Memo</th><th>Method</th><th>Date</th></tr></thead><tbody>';
+    for(var i=0;i<Math.min(d.deposits.length,10);i++){
+      var dp=d.deposits[i];
+      html+='<tr><td><b>'+(dp.amount||0).toFixed(2)+'</b></td><td><span class="badge '+dp.status+'">'+dp.status+'</span></td><td style="font-family:var(--mono);font-size:10px">'+esc(dp.memo||'-')+'</td><td style="font-size:10px">'+esc(dp.matchMethod||'-')+'</td><td style="font-size:10px">'+new Date(dp.createdAt).toLocaleDateString()+'</td></tr>';
+    }
+    html+='</tbody></table></div>';
+  }
+  html+='</div>';
+
+  // Withdrawals
+  html+='<div class="subsection"><h4>💸 Withdrawals ('+d.withdrawals.length+')</h4>';
+  if(d.withdrawals.length===0){
+    html+='<div style="color:var(--dim);text-align:center;padding:14px">No withdrawals</div>';
+  }else{
+    html+='<div class="tbl-wrap"><table style="font-size:11px"><thead><tr><th>Amount</th><th>Net</th><th>Status</th><th>Wallet</th><th>Date</th></tr></thead><tbody>';
+    for(var i=0;i<Math.min(d.withdrawals.length,10);i++){
+      var w=d.withdrawals[i];
+      html+='<tr><td>'+(w.amount||0).toFixed(2)+'</td><td><b>'+(w.netAmount||0).toFixed(2)+'</b></td><td><span class="badge '+w.status+'">'+w.status+'</span></td><td style="font-family:var(--mono);font-size:10px">'+(w.walletAddress||'').slice(0,12)+'...</td><td style="font-size:10px">'+new Date(w.createdAt).toLocaleDateString()+'</td></tr>';
+    }
+    html+='</tbody></table></div>';
+  }
+  html+='</div>';
+
+  // Milestones claimed
+  if(d.claimedMilestones&&d.claimedMilestones.length){
+    html+='<div class="subsection"><h4>🎁 Claimed Milestones</h4><div style="display:flex;gap:6px;flex-wrap:wrap">';
+    for(var i=0;i<d.claimedMilestones.length;i++){
+      html+='<span class="badge verified">'+d.claimedMilestones[i]+'</span>';
+    }
+    html+='</div></div>';
+  }
+
+  document.getElementById('modalPlayerBody').innerHTML=html;
+}
+
+function closePlayerModal(){
+  document.getElementById('playerModal').classList.remove('open');
+}
+
+// ─── LEADERBOARD ───
+async function loadLeaderboard(){
+  var d=await af('/api/admin/leaderboard');
+  if(!d)return;
+  var h='';
+  for(var i=0;i<d.leaderboard.length;i++){
+    var u=d.leaderboard[i];
+    var medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1);
+    h+='<tr>'+
+      '<td style="font-weight:800;font-size:14px">'+medal+'</td>'+
+      '<td><span class="id-link" onclick="openPlayerModal(\''+u.telegramId+'\')">'+esc(u.firstName||'-')+'</span><br><span style="font-size:10px;color:var(--dim)">@'+esc(u.username||'')+' · '+u.telegramId+'</span></td>'+
+      '<td>'+u.totalRefs+'</td>'+
+      '<td><b style="color:var(--green)">'+u.validRefs+'</b></td>'+
+      '<td>'+u.totalDeposits.toFixed(2)+' TON</td>'+
+      '<td><b style="color:var(--amber-l)">'+u.commission.toFixed(4)+'</b> TON</td>'+
+    '</tr>';
+  }
+  document.getElementById('lbBody').innerHTML=h||'<tr><td colspan="6" style="text-align:center;color:var(--dim);padding:30px">No data</td></tr>';
+}
+
+// ─── SECURITY ───
+async function loadSecurity(){
+  var d=await af('/api/admin/security');
+  if(!d)return;
+  var h='';
+  if(d.suspicious.length===0){
+    h='<div style="text-align:center;color:var(--green);padding:30px">✅ No suspicious activity detected</div>';
+  }else{
+    for(var i=0;i<d.suspicious.length;i++){
+      var s=d.suspicious[i];
+      var cls='sec-item '+s.severity;
+      var typeCls=s.severity==='high'?'high-c':'';
+      h+='<div class="'+cls+'">';
+      h+='<div class="sec-type '+typeCls+'">⚠️ '+s.type.replace(/_/g,' ')+' ('+s.severity.toUpperCase()+')</div>';
+      if(s.type==='SAME_IP'){
+        h+='<div class="sec-info"><span>IP:</span> <b style="font-family:var(--mono)">'+s.ipAddress+'</b> · '+s.users.length+' users: ';
+        for(var j=0;j<s.users.length;j++){
+          h+='<span class="id-link" onclick="openPlayerModal(\''+s.users[j]+'\')">'+s.users[j]+'</span>'+(j<s.users.length-1?', ':'');
+        }
+        h+='</div>';
+      }else if(s.type==='SAME_WALLET'){
+        h+='<div class="sec-info"><span>Wallet:</span> <b style="font-family:var(--mono);font-size:10px">'+s.wallet+'</b> · used by '+s.users.length+' users: ';
+        for(var j=0;j<s.users.length;j++){
+          h+='<span class="id-link" onclick="openPlayerModal(\''+s.users[j]+'\')">'+s.users[j]+'</span>'+(j<s.users.length-1?', ':'');
+        }
+        h+='</div>';
+      }else if(s.type==='REF_FARMING'){
+        h+='<div class="sec-info"><span class="id-link" onclick="openPlayerModal(\''+s.userId+'\')">'+esc(s.firstName||s.userId)+'</span> · '+s.totalRefs+' refs but only '+s.validRefs+' valid (ratio: '+s.ratio+')</div>';
+        h+='<div style="margin-top:8px"><button class="btn btn-danger btn-sm" onclick="banPlayer(\''+s.userId+'\',true)">Ban</button></div>';
+      }
+      h+='</div>';
+    }
+  }
+  document.getElementById('secBody').innerHTML=h;
+}
+
+// ─── AUDIT LOGS ───
+async function loadLogs(){
+  var action=document.getElementById('logFilter').value;
+  var search=document.getElementById('logSearch').value;
+  var qs=[];
+  if(action)qs.push('action='+action);
+  if(search)qs.push('search='+encodeURIComponent(search));
+  var d=await af('/api/admin/logs'+(qs.length?'?'+qs.join('&'):''));
+  if(!d)return;
+  var h='';
+  for(var i=0;i<d.logs.length;i++){
+    var l=d.logs[i];
+    var actionClr=l.action.includes('BAN')||l.action.includes('REJECT')?'red':l.action.includes('GIVE')||l.action.includes('APPROVE')?'green':'amber-l';
+    h+='<tr>'+
+      '<td><span class="badge '+(actionClr==='red'?'banned':actionClr==='green'?'verified':'pending')+'">'+l.action.replace(/_/g,' ')+'</span></td>'+
+      '<td><span class="id-link" onclick="openPlayerModal(\''+l.targetId+'\')">'+(l.targetId||'-')+'</span></td>'+
+      '<td style="font-family:var(--mono);font-size:10px;color:var(--dim);max-width:300px;overflow:hidden;text-overflow:ellipsis">'+JSON.stringify(l.details||{}).slice(0,80)+'</td>'+
+      '<td style="font-size:10px;color:var(--dim)">'+(l.ipAddress||'-')+'</td>'+
+      '<td style="font-size:10px;color:var(--dim)">'+new Date(l.createdAt).toLocaleString()+'</td>'+
+    '</tr>';
+  }
+  document.getElementById('logsBody').innerHTML=h||'<tr><td colspan="5" style="text-align:center;color:var(--dim);padding:30px">No logs</td></tr>';
 }
 
 // ─── PLAYERS ───
@@ -413,7 +694,7 @@ async function loadPlayers(){
     var p=d.players[i];
     var refsCount=(p.referrals||[]).length;
     h+='<tr>'+
-      '<td class="id-link" onclick="navigator.clipboard.writeText(\''+p.telegramId+'\');toast(\'ID copied\')">'+p.telegramId+'</td>'+
+      '<td class="id-link" onclick="openPlayerModal(\''+p.telegramId+'\')">'+p.telegramId+'</td>'+
       '<td>'+esc(p.firstName||'-')+'<br><span style="color:var(--dim);font-size:10px">@'+esc(p.username||'')+'</span></td>'+
       '<td><b>'+(p.balance||0).toFixed(2)+'</b></td>'+
       '<td>'+(p.totalDeposited||0).toFixed(2)+'</td>'+

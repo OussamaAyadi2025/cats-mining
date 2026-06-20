@@ -38,6 +38,14 @@ const MINERS_CONFIG = [
   { id: 'miner_8', name: 'Raja',     level: 8, price: 100, daily: 4.16,  days: 60, total: 250   },
 ];
 
+// Referral milestone rewards (free miner at X valid referrals)
+const MILESTONES = [
+  { id: 'ref_15',  refs: 15,  minerId: 'miner_1', name: 'Whiskers' },
+  { id: 'ref_30',  refs: 30,  minerId: 'miner_2', name: 'Mittens'  },
+  { id: 'ref_50',  refs: 50,  minerId: 'miner_3', name: 'Shadow'   },
+  { id: 'ref_100', refs: 100, minerId: 'miner_5', name: 'Tiger'    },
+];
+
 // ============ MONGODB ============
 mongoose.connect(process.env.MONGO_URI).then(() => console.log('✅ MongoDB connected')).catch(e => console.error('❌ MongoDB:', e.message));
 
@@ -79,6 +87,34 @@ const referralLogSchema = new mongoose.Schema({
 });
 referralLogSchema.index({ referrerId: 1, referredId: 1 }, { unique: true });
 const ReferralLog = mongoose.model('CatsMiningReferralLog', referralLogSchema);
+
+// Admin audit log
+const adminLogSchema = new mongoose.Schema({
+  action: { type: String, required: true, index: true },
+  targetId: { type: String, index: true },
+  details: mongoose.Schema.Types.Mixed,
+  ipAddress: String,
+  createdAt: { type: Date, default: Date.now, index: true, expires: 86400 * 90 } // 90 days
+});
+const AdminLog = mongoose.model('CatsMiningAdminLog', adminLogSchema);
+
+// Milestone claims (free miner rewards from referrals)
+const milestoneClaimSchema = new mongoose.Schema({
+  telegramId: { type: String, index: true },
+  milestoneId: String,  // e.g. "ref_15"
+  minerId: String,
+  claimedAt: { type: Date, default: Date.now }
+});
+milestoneClaimSchema.index({ telegramId: 1, milestoneId: 1 }, { unique: true });
+const MilestoneClaim = mongoose.model('CatsMiningMilestoneClaim', milestoneClaimSchema);
+
+// Helper to log admin actions
+async function logAdmin(action, targetId, details, req) {
+  try {
+    const ip = req?.headers?.['x-forwarded-for']?.split(',')[0] || req?.ip || '';
+    await AdminLog.create({ action, targetId: targetId?.toString(), details, ipAddress: ip });
+  } catch(e) { console.error('[ADMIN-LOG]', e.message); }
+}
 
 const activeMinerSchema = new mongoose.Schema({
   telegramId: { type: String, index: true },
@@ -596,7 +632,6 @@ app.post('/api/withdrawals/request', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
 // ============ API: TASKS ============
 app.get('/api/tasks', async (req, res) => {
   try {
@@ -756,6 +791,72 @@ app.get('/api/referrals/:telegramId', async (req, res) => {
 });
 
 // ============ DEPOSIT VERIFICATION (CRON) ============
+// ============ MILESTONE REWARDS ============
+async function checkMilestones(telegramId) {
+  try {
+    const tgId = telegramId.toString();
+    const user = await User.findOne({ telegramId: tgId });
+    if (!user) return;
+
+    // Count valid referrals (those with verified deposits)
+    let validRefs = 0;
+    for (const refId of user.referrals || []) {
+      const dep = await Deposit.findOne({
+        telegramId: refId.toString(),
+        status: 'verified',
+        amount: { $gte: 0.5 }
+      });
+      if (dep) validRefs++;
+    }
+
+    console.log(`[MILESTONE] ${tgId} has ${validRefs} valid refs`);
+
+    // Check each milestone
+    for (const ms of MILESTONES) {
+      if (validRefs < ms.refs) continue;
+
+      // Already claimed?
+      const claimed = await MilestoneClaim.findOne({ telegramId: tgId, milestoneId: ms.id });
+      if (claimed) continue;
+
+      // Award the miner
+      const minerConfig = MINERS_CONFIG.find(m => m.id === ms.minerId);
+      if (!minerConfig) continue;
+
+      try {
+        await MilestoneClaim.create({ telegramId: tgId, milestoneId: ms.id, minerId: ms.minerId });
+
+        const activateAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        await ActiveMiner.create({
+          telegramId: tgId,
+          minerId: minerConfig.id,
+          minerName: minerConfig.name,
+          level: minerConfig.level,
+          price: 0,  // Free reward — not a real purchase
+          daily: minerConfig.daily,
+          totalReturn: minerConfig.total,
+          startsEarningAt: activateAt,
+          expiresAt: new Date(activateAt.getTime() + minerConfig.days * 24 * 60 * 60 * 1000)
+        });
+
+        console.log(`[MILESTONE] ✅ ${tgId} earned ${ms.name} for ${ms.refs} refs!`);
+
+        try {
+          await bot.sendMessage(tgId,
+            `🎁 *Milestone Reward!*\n\nYou reached *${ms.refs} valid referrals*!\n\n🎉 Free *${ms.name}* (Lv.${minerConfig.level}) activated!\n💰 Daily: ${minerConfig.daily} TON\n⏳ Starts earning in 24h`,
+            { parse_mode: 'Markdown' }
+          );
+        } catch(e) {}
+      } catch(e) {
+        // Duplicate key error means already claimed (race condition)
+        console.log(`[MILESTONE] ⏭️ ${tgId} already claimed ${ms.id}`);
+      }
+    }
+  } catch(error) {
+    console.error('[MILESTONE]', error.message);
+  }
+}
+
 async function verifyDeposits() {
   try {
     const pending = await Deposit.find({ status: 'pending' });
@@ -965,6 +1066,9 @@ async function verifyDeposits() {
               { upsert: true }
             );
             console.log(`[REFERRAL] +${commission.toFixed(4)} TON to ${user.referredBy} (verified deposit)`);
+
+            // Check milestones for referrer
+            await checkMilestones(user.referredBy);
           } else {
             console.log(`[REFERRAL] ⏭️ Already paid for ${matchedDep.telegramId}`);
           }
@@ -1086,6 +1190,7 @@ app.post('/api/admin/ban-player', adminAuth, async (req, res) => {
   try {
     const { telegramId, banned } = req.body;
     await User.findOneAndUpdate({ telegramId: telegramId.toString() }, { banned });
+    await logAdmin(banned ? 'BAN_PLAYER' : 'UNBAN_PLAYER', telegramId, { banned }, req);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1097,6 +1202,7 @@ app.post('/api/admin/edit-balance', adminAuth, async (req, res) => {
     const { telegramId, amount } = req.body;
     const user = await User.findOneAndUpdate({ telegramId: telegramId.toString() }, { $inc: { balance: amount } }, { new: true });
     if (!user) return res.status(404).json({ error: 'User not found' });
+    await logAdmin('EDIT_BALANCE', telegramId, { amount, newBalance: user.balance }, req);
     res.json({ success: true, newBalance: user.balance });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1120,6 +1226,7 @@ app.post('/api/admin/give-miner', adminAuth, async (req, res) => {
       expiresAt: new Date(Date.now() + minerConfig.days * 24 * 60 * 60 * 1000)
     });
     await miner.save();
+    await logAdmin('GIVE_MINER', telegramId, { minerId, minerName: minerConfig.name }, req);
     res.json({ success: true, miner });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1148,6 +1255,7 @@ app.post('/api/admin/give-miner-all', adminAuth, async (req, res) => {
       await miner.save();
       count++;
     }
+    await logAdmin('GIVE_MINER_ALL', 'ALL', { minerId, count }, req);
     res.json({ success: true, count });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1156,8 +1264,9 @@ app.post('/api/admin/give-miner-all', adminAuth, async (req, res) => {
 
 app.post('/api/admin/bypass', adminAuth, async (req, res) => {
   try {
-    const { telegramId } = req.body;
-    await User.findOneAndUpdate({ telegramId: telegramId.toString() }, { withdrawBypass: true });
+    const { telegramId, bypass } = req.body;
+    await User.findOneAndUpdate({ telegramId: telegramId.toString() }, { withdrawBypass: bypass !== false });
+    await logAdmin('BYPASS_WITHDRAW', telegramId, { bypass: bypass !== false }, req);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1174,43 +1283,15 @@ app.get('/api/admin/withdrawals', adminAuth, async (req, res) => {
   }
 });
 
-app.post('/api/admin/approve-withdrawal', adminAuth, async (req, res) => {
-  try {
-    const { withdrawalId, txHash } = req.body;
-    const w = await Withdrawal.findByIdAndUpdate(withdrawalId, { status: 'approved', txHash }, { new: true });
-    if (!w) return res.status(404).json({ error: 'Not found' });
-
-    await User.findOneAndUpdate({ telegramId: w.telegramId }, { $inc: { totalWithdrawn: w.amount } });
-
-    // Post proof
-    const proofChannel = process.env.PROOF_CHANNEL;
-    if (proofChannel) {
-      try {
-        const masked = '****' + w.telegramId.slice(-4);
-        await bot.sendMessage(proofChannel,
-          `✅ *Withdrawal Paid*\n👤 User: ${masked}\n💰 ${w.netAmount.toFixed(4)} TON\n🔗 [View TX](https://tonviewer.com/transaction/${txHash})`,
-          { parse_mode: 'Markdown' }
-        );
-      } catch (e) {}
-    }
-
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+app.post('/api/admin/approve-withdrawal-old-removed', adminAuth, async (req, res) => {
+  res.status(410).json({ error: 'use /api/admin/approve-withdrawal' });
+});
+app.post('/api/admin/reject-withdrawal-old-removed', adminAuth, async (req, res) => {
+  res.status(410).json({ error: 'use /api/admin/reject-withdrawal' });
 });
 
-app.post('/api/admin/reject-withdrawal', adminAuth, async (req, res) => {
-  try {
-    const { withdrawalId } = req.body;
-    const w = await Withdrawal.findById(withdrawalId);
-    if (!w) return res.status(404).json({ error: 'Not found' });
-    await User.findOneAndUpdate({ telegramId: w.telegramId }, { $inc: { balance: w.amount } });
-    await Withdrawal.findByIdAndDelete(withdrawalId);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+app.post('/api/admin/reject-withdrawal-old-removed-v2', adminAuth, async (req, res) => {
+  res.status(410).json({ error: 'use /api/admin/reject-withdrawal' });
 });
 
 app.post('/api/admin/broadcast', adminAuth, async (req, res) => {
@@ -1301,6 +1382,7 @@ app.post('/api/admin/manual-deposit', adminAuth, async (req, res) => {
       await bot.sendMessage(tgId, `✅ Deposit of ${amt} TON credited by admin!`, { parse_mode: 'Markdown' });
     } catch(e) {}
 
+    await logAdmin('MANUAL_DEPOSIT', tgId, { amount: amt, minerId }, req);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1399,9 +1481,21 @@ app.post('/api/admin/approve-withdrawal', adminAuth, async (req, res) => {
       { telegramId: wd.telegramId },
       { $inc: { totalWithdrawn: wd.netAmount } }
     );
+    await logAdmin('APPROVE_WITHDRAWAL', wd.telegramId, { withdrawalId, amount: wd.amount, netAmount: wd.netAmount, txHash }, req);
     try {
       await bot.sendMessage(wd.telegramId, `✅ Withdrawal approved!\n\n💰 Amount: ${wd.netAmount} TON\n📍 To: \`${wd.walletAddress}\`\n🔗 TX: ${txHash || 'manual'}`, { parse_mode: 'Markdown' });
     } catch(e) {}
+    // Post proof
+    const proofChannel = process.env.PROOF_CHANNEL;
+    if (proofChannel && txHash && txHash !== 'manual') {
+      try {
+        const masked = '****' + wd.telegramId.slice(-4);
+        await bot.sendMessage(proofChannel,
+          `✅ *Withdrawal Paid*\n👤 User: ${masked}\n💰 ${wd.netAmount.toFixed(4)} TON\n🔗 [View TX](https://tonviewer.com/transaction/${txHash})`,
+          { parse_mode: 'Markdown' }
+        );
+      } catch (e) {}
+    }
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1421,6 +1515,7 @@ app.post('/api/admin/reject-withdrawal', adminAuth, async (req, res) => {
       { telegramId: wd.telegramId },
       { $inc: { balance: wd.amount } }
     );
+    await logAdmin('REJECT_WITHDRAWAL', wd.telegramId, { withdrawalId, amount: wd.amount }, req);
     try {
       await bot.sendMessage(wd.telegramId, `❌ Withdrawal rejected. ${wd.amount} TON refunded to your balance.`);
     } catch(e) {}
@@ -1428,6 +1523,160 @@ app.post('/api/admin/reject-withdrawal', adminAuth, async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// Player details with miners
+app.get('/api/admin/player/:id', adminAuth, async (req, res) => {
+  try {
+    const tgId = req.params.id;
+    const user = await User.findOne({ telegramId: tgId });
+    if (!user) return res.status(404).json({ error: 'NOT_FOUND' });
+
+    const miners = await ActiveMiner.find({ telegramId: tgId }).sort({ createdAt: 1 });
+    const deposits = await Deposit.find({ telegramId: tgId }).sort({ createdAt: -1 });
+    const withdrawals = await Withdrawal.find({ telegramId: tgId }).sort({ createdAt: -1 });
+
+    // Count valid referrals (with verified deposits)
+    let validRefs = 0;
+    for (const refId of user.referrals || []) {
+      const dep = await Deposit.findOne({ telegramId: refId.toString(), status: 'verified', amount: { $gte: 0.5 } });
+      if (dep) validRefs++;
+    }
+
+    // Claimed milestones
+    const claimed = await MilestoneClaim.find({ telegramId: tgId });
+
+    res.json({
+      success: true,
+      user: user.toObject(),
+      miners,
+      deposits,
+      withdrawals,
+      validRefs,
+      claimedMilestones: claimed.map(c => c.milestoneId)
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Admin audit logs
+app.get('/api/admin/logs', adminAuth, async (req, res) => {
+  try {
+    const action = req.query.action;
+    const search = req.query.search;
+    const query = {};
+    if (action) query.action = action;
+    if (search) query.targetId = { $regex: search, $options: 'i' };
+    const logs = await AdminLog.find(query).sort({ createdAt: -1 }).limit(200);
+    res.json({ success: true, logs });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Referral leaderboard (top referrers)
+app.get('/api/admin/leaderboard', adminAuth, async (req, res) => {
+  try {
+    const users = await User.find({ banned: { $ne: true } }).sort({ refCommission: -1 }).limit(50);
+    const board = await Promise.all(users.map(async u => {
+      let validRefs = 0;
+      let totalDeposits = 0;
+      for (const refId of u.referrals || []) {
+        const refUser = await User.findOne({ telegramId: refId.toString() });
+        if (refUser && refUser.totalDeposited > 0) {
+          validRefs++;
+          totalDeposits += refUser.totalDeposited;
+        }
+      }
+      return {
+        telegramId: u.telegramId,
+        firstName: u.firstName,
+        username: u.username,
+        totalRefs: (u.referrals || []).length,
+        validRefs,
+        totalDeposits,
+        commission: u.refCommission || 0
+      };
+    }));
+    board.sort((a, b) => b.commission - a.commission);
+    res.json({ success: true, leaderboard: board });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Security: detect suspicious users
+app.get('/api/admin/security', adminAuth, async (req, res) => {
+  try {
+    const suspicious = [];
+
+    // Same IP — users sharing IP with their referrer
+    const usersWithRef = await User.find({ referredBy: { $ne: null }, ipAddress: { $ne: '' } }).limit(500);
+    const ipMap = {};
+    for (const u of usersWithRef) {
+      if (!u.ipAddress) continue;
+      if (!ipMap[u.ipAddress]) ipMap[u.ipAddress] = [];
+      ipMap[u.ipAddress].push(u.telegramId);
+    }
+    for (const ip in ipMap) {
+      if (ipMap[ip].length > 1) {
+        suspicious.push({
+          type: 'SAME_IP',
+          ipAddress: ip,
+          users: ipMap[ip],
+          severity: ipMap[ip].length > 3 ? 'high' : 'medium'
+        });
+      }
+    }
+
+    // Same wallet address — multiple users withdrawing to same wallet
+    const wdAgg = await Withdrawal.aggregate([
+      { $group: { _id: '$walletAddress', users: { $addToSet: '$telegramId' }, count: { $sum: 1 } } },
+      { $match: { 'users.1': { $exists: true } } },
+      { $limit: 50 }
+    ]);
+    for (const w of wdAgg) {
+      suspicious.push({
+        type: 'SAME_WALLET',
+        wallet: w._id,
+        users: w.users,
+        count: w.count,
+        severity: 'high'
+      });
+    }
+
+    // Excessive referrals without deposits
+    const refFarmers = await User.find({ 'referrals.10': { $exists: true } }).limit(100);
+    for (const u of refFarmers) {
+      let validRefs = 0;
+      for (const refId of u.referrals || []) {
+        const dep = await Deposit.findOne({ telegramId: refId.toString(), status: 'verified', amount: { $gte: 0.5 } });
+        if (dep) validRefs++;
+      }
+      const ratio = validRefs / u.referrals.length;
+      if (u.referrals.length >= 20 && ratio < 0.05) {
+        suspicious.push({
+          type: 'REF_FARMING',
+          userId: u.telegramId,
+          firstName: u.firstName,
+          totalRefs: u.referrals.length,
+          validRefs,
+          ratio: ratio.toFixed(2),
+          severity: 'medium'
+        });
+      }
+    }
+
+    res.json({ success: true, suspicious });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Milestone settings (read/write)
+app.get('/api/admin/milestones', adminAuth, async (req, res) => {
+  res.json({ success: true, milestones: MILESTONES });
 });
 
 app.post('/api/admin/reseed-tasks', adminAuth, async (req, res) => {
