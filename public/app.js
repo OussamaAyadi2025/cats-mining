@@ -583,62 +583,140 @@ function getTaskIcon(taskId) {
   return TASK_ICONS.t_news;
 }
 
+let currentTaskTab = 'daily';
+
+function switchTaskTab(tab, el) {
+  currentTaskTab = tab;
+  document.querySelectorAll('.tt-btn').forEach(b => b.classList.remove('active'));
+  if (el) el.classList.add('active');
+  loadTasks();
+}
+
 async function loadTasks() {
   try {
-    const r = await fetch(API+'/api/tasks');
+    const r = await fetch(API+'/api/tasks?telegramId='+(userData?.telegramId||''));
     const d = await r.json();
     if (!d.success) return;
 
-    const canDaily = !userData||!userData.lastDaily||(Date.now()-new Date(userData.lastDaily).getTime())>=86400000;
-    const dailyIco = TASK_ICONS.t_daily;
     const svgAttrs = 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
 
     const renderTask = (t) => {
-      const done = userData&&userData.completedTasks&&userData.completedTasks.includes(t.taskId);
       const ico = getTaskIcon(t.taskId);
+      const rewardDisplay = t.rewardLabel ? '+ '+t.rewardLabel+' TON' : '+ '+(t.reward||0)+' TON';
+
+      let btn;
+      if (t.isDaily) {
+        if (t.onCooldown && t.nextClaim) {
+          const diff = new Date(t.nextClaim) - Date.now();
+          const hh = Math.max(0, Math.floor(diff/3600000));
+          const mm = Math.max(0, Math.floor((diff%3600000)/60000));
+          btn = `<div class="task-btn done">${ic('clock',12)} ${hh}h ${mm}m</div>`;
+        } else {
+          btn = `<button class="task-btn claim" onclick="doTask('${t.taskId}','${t.link||''}',${t.reward||0})">Claim</button>`;
+        }
+      } else {
+        const done = userData?.completedTasks?.includes(t.taskId);
+        if (done) {
+          btn = `<div class="task-btn done">${ic('check',12)} Done</div>`;
+        } else {
+          btn = `<button class="task-btn go" onclick="doTask('${t.taskId}','${t.link||''}',${t.reward||0})">Go</button>`;
+        }
+      }
+
       return `<div class="task-card">
         <div class="task-icon ${ico.color}"><svg ${svgAttrs}>${ico.svg}</svg></div>
-        <div class="task-info"><div class="task-name">${t.title}</div><div class="task-reward">+ ${t.reward} TON</div></div>
-        ${done?'<div class="task-btn done">'+T('taskDone')+'</div>':'<button class="task-btn go" onclick="doTask(\''+t.taskId+'\',\''+(t.link||'')+'\','+t.reward+')">'+T('taskGo')+'</button>'}
+        <div class="task-info">
+          <div class="task-name">${t.title}</div>
+          <div class="task-reward">${rewardDisplay}</div>
+        </div>
+        ${btn}
       </div>`;
     };
 
-    // Split tasks by category
-    const allTasks = d.tasks || [];
-    const gettingStarted = allTasks.filter(t => t.category === 'getting_started').sort((a,b)=>(a.position||99)-(b.position||99));
-    const partners = allTasks.filter(t => t.category !== 'getting_started');
+    const allTasks = (d.tasks || []).sort((a,b)=>(a.position||99)-(b.position||99));
+    const daily = allTasks.filter(t => t.category === 'daily' || t.isDaily);
+    const channels = allTasks.filter(t => t.category !== 'daily' && !t.isDaily);
+
+    // Update channels count badge
+    const badge = document.getElementById('channels-count');
+    if (badge) {
+      const uncompletedChannels = channels.filter(t => !userData?.completedTasks?.includes(t.taskId)).length;
+      badge.textContent = uncompletedChannels;
+      badge.style.display = uncompletedChannels > 0 ? 'inline-flex' : 'none';
+    }
 
     let html = '';
 
-    // ─── Getting Started Section ───
-    if (gettingStarted.length > 0) {
-      html += '<div class="sec-hdr" style="margin-top:8px"><span>🚀 Getting Started</span></div>';
-      html += gettingStarted.map(renderTask).join('');
-    }
+    if (currentTaskTab === 'daily') {
+      // Daily bonus info card
+      html += `<div class="daily-bonus-card">
+        <div class="db-ico">✨</div>
+        <div class="db-text">Complete daily tasks and earn TON bonuses every 24 hours. Come back daily!</div>
+      </div>`;
 
-    // ─── Daily Reward + Partner Tasks ───
-    html += '<div class="sec-hdr" style="margin-top:14px"><span>🎁 Daily &amp; Partners</span></div>';
-    html += `<div class="task-card">
-      <div class="task-icon ${dailyIco.color}"><svg ${svgAttrs}>${dailyIco.svg}</svg></div>
-      <div class="task-info"><div class="task-name">${T('dailyReward')}</div><div class="task-reward">+ 0.005~0.015 TON</div></div>
-      ${canDaily?'<button class="task-btn claim" onclick="claimDaily()">'+T('claimDaily')+'</button>':'<div class="task-btn done">'+T('taskDone')+'</div>'}
-    </div>`;
-    if (partners.length > 0) {
-      html += partners.map(renderTask).join('');
+      if (daily.length > 0) {
+        html += daily.map(renderTask).join('');
+      } else {
+        html += '<div style="text-align:center;color:var(--dm);padding:30px;font-size:13px">No daily tasks available</div>';
+      }
+    } else {
+      // Channels tab
+      if (channels.length > 0) {
+        html += channels.map(renderTask).join('');
+      } else {
+        html += '<div style="text-align:center;color:var(--dm);padding:30px;font-size:13px">No channel tasks available</div>';
+      }
     }
 
     document.getElementById('tasks-list').innerHTML = html;
-  } catch(e) {}
+  } catch(e) { console.error('[TASKS]', e); }
 }
 
 async function doTask(taskId, link, reward) {
   if (!userData) return;
-  if (link && link!=='null' && link!=='#' && link!=='') window.open(link,'_blank');
-  const btn = document.querySelector('[onclick*="'+taskId+'"]');
-  if (btn) {
-    btn.disabled=true; let sec=15;
-    btn.className='task-btn done'; btn.innerHTML=ic('clock',12)+' '+sec+'s';
-    const timer=setInterval(()=>{sec--;btn.innerHTML=ic('clock',12)+' '+sec+'s';if(sec<=0){clearInterval(timer);btn.className='task-btn claim';btn.textContent=T('taskClaim');btn.disabled=false;btn.onclick=()=>claimTask(taskId);}},1000);
+  // Open link if present
+  if (link && link!=='null' && link!=='#' && link!=='') {
+    window.open(link, '_blank');
+  }
+
+  // Find the task data to know if it's daily or one-time
+  let tDaily = false;
+  try {
+    const r = await fetch(API+'/api/tasks?telegramId='+userData.telegramId);
+    const d = await r.json();
+    const t = (d.tasks||[]).find(x => x.taskId === taskId);
+    if (t) tDaily = t.isDaily || t.category === 'daily';
+  } catch(e) {}
+
+  if (tDaily) {
+    // Daily task: claim immediately, no 15s wait
+    await claimTask(taskId);
+    return;
+  }
+
+  // One-time task with link: 15s countdown
+  if (link && link!=='null' && link!=='#' && link!=='') {
+    const btn = document.querySelector('[onclick*="\''+taskId+'\'"]');
+    if (btn) {
+      btn.disabled = true;
+      let sec = 15;
+      btn.className = 'task-btn done';
+      btn.innerHTML = ic('clock',12)+' '+sec+'s';
+      const timer = setInterval(() => {
+        sec--;
+        btn.innerHTML = ic('clock',12)+' '+sec+'s';
+        if (sec <= 0) {
+          clearInterval(timer);
+          btn.className = 'task-btn claim';
+          btn.textContent = T('taskClaim');
+          btn.disabled = false;
+          btn.onclick = () => claimTask(taskId);
+        }
+      }, 1000);
+    }
+  } else {
+    // No link, no daily: just claim
+    await claimTask(taskId);
   }
 }
 
@@ -646,10 +724,28 @@ async function claimTask(taskId) {
   try {
     const r = await fetch(API+'/api/tasks/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({telegramId:userData.telegramId,taskId})});
     const d = await r.json();
-    if (d.success) { toast('✓ +'+d.reward+' TON'); userData.balance=d.newBalance; userData.completedTasks.push(taskId); updateStats(); loadTasks(); }
-    else if (d.error==='NOT_MEMBER') toast('⚠ Please join the channel first');
-    else toast('⚠ '+(d.error||'Error'));
-  } catch(e) { toast('⚠ Error'); }
+    if (d.success) {
+      toast('✓ +'+d.reward.toFixed(4)+' TON');
+      userData.balance = d.newBalance;
+      if (!d.daily && userData.completedTasks) userData.completedTasks.push(taskId);
+      updateStats();
+      loadTasks();
+    } else if (d.error === 'NOT_MEMBER') {
+      toast('⚠ Please join the channel first');
+    } else if (d.error === 'COOLDOWN') {
+      const diff = new Date(d.nextClaim) - Date.now();
+      const hh = Math.max(0, Math.floor(diff/3600000));
+      const mm = Math.max(0, Math.floor((diff%3600000)/60000));
+      toast('⏱ Come back in '+hh+'h '+mm+'m');
+      loadTasks();
+    } else if (d.error === 'NO_MINER_TODAY') {
+      toast('⚠ Buy a new miner today to claim this');
+    } else if (d.error === 'NO_MINER') {
+      toast('⚠ You need a paid miner first');
+    } else {
+      toast('⚠ '+(d.message || d.error || 'Error'));
+    }
+  } catch(e) { toast('⚠ Network error'); }
 }
 
 async function claimDaily() {

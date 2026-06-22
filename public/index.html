@@ -89,8 +89,26 @@
 
     <!-- TASKS -->
     <div class="page" id="page-tasks">
-      <div class="pg-banner"><img src="images/bg-tasks.png" alt="" onerror="this.parentElement.style.display='none'"></div>
-      <div class="sec-hdr"><span id="tasks-title">Available tasks</span></div>
+      <div class="tasks-hero">
+        <div class="tasks-title-row">
+          <img class="cat-btn tasks-cat" src="images/cat-icon.png" alt="">
+          <h2 class="tasks-title">Tasks</h2>
+        </div>
+        <div class="tasks-subtitle">Complete tasks and earn bonuses</div>
+      </div>
+
+      <div class="tasks-toggle">
+        <button class="tt-btn active" data-tab="daily" onclick="switchTaskTab('daily',this)">
+          <img class="cat-btn" src="images/cat-icon.png" alt="">
+          <span>Daily</span>
+        </button>
+        <button class="tt-btn" data-tab="channels" onclick="switchTaskTab('channels',this)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 010 7.07"/></svg>
+          <span>Channels</span>
+          <span class="tt-badge" id="channels-count">0</span>
+        </button>
+      </div>
+
       <div id="tasks-list"></div>
     </div>
 
