@@ -16,7 +16,7 @@ const ICON = {
   diamond: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12l4 6-10 13L2 9z"/><path d="M11 3L8 9l4 13 4-13-3-6"/><path d="M2 9h20"/></svg>',
   wallet: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="14" rx="2"/><path d="M16 14a2 2 0 010-4h6v4z"/></svg>',
   // Mining
-  pickaxe: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18h16v-2a8 8 0 10-16 0v2z" fill="currentColor" opacity="0.2"/><path d="M4 18h16v-2a8 8 0 10-16 0v2z"/><circle cx="12" cy="14" r="1.5" fill="currentColor"/><path d="M12 9v2"/></svg>',
+  pickaxe: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3l14 4v3l-14-4z" fill="currentColor" fill-opacity="0.25"/><path d="M5 3l14 4v3l-14-4z"/><path d="M9 6l-7 13 2 2 11-12"/><circle cx="3" cy="20" r="1.5" fill="currentColor"/></svg>`,
   // People
   user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 016-6h4a6 6 0 016 6v1"/></svg>',
   users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2 21v-1a5 5 0 015-5h4a5 5 0 015 5v1"/><circle cx="17" cy="9" r="2.5"/><path d="M22 19v-.5a3.5 3.5 0 00-3-3.46"/></svg>',
@@ -70,6 +70,22 @@ function updateWalletUI(w) {
     btn.classList.add('connected');
     addrTxt.textContent = a.slice(0,8) + '...' + a.slice(-6);
     addrBox.style.display = 'flex';
+
+    // Save wallet to backend (for task verification + anti-fraud)
+    if (userData && userData.telegramId) {
+      fetch(API+'/api/user/wallet', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ telegramId: userData.telegramId, walletAddress: a })
+      }).then(r=>r.json()).then(d=>{
+        if (d.success) {
+          userData.walletAddress = a;
+          console.log('[WALLET] saved');
+        } else if (d.error === 'WALLET_ALREADY_USED') {
+          toast('⚠ This wallet is already linked to another account');
+        }
+      }).catch(()=>{});
+    }
   } else {
     txt.textContent = 'Connect';
     btn.classList.remove('connected');
@@ -576,13 +592,8 @@ async function loadTasks() {
     const canDaily = !userData||!userData.lastDaily||(Date.now()-new Date(userData.lastDaily).getTime())>=86400000;
     const dailyIco = TASK_ICONS.t_daily;
     const svgAttrs = 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
-    let html = `<div class="task-card">
-      <div class="task-icon ${dailyIco.color}"><svg ${svgAttrs}>${dailyIco.svg}</svg></div>
-      <div class="task-info"><div class="task-name">${T('dailyReward')}</div><div class="task-reward">+ 0.005~0.015 TON</div></div>
-      ${canDaily?'<button class="task-btn claim" onclick="claimDaily()">'+T('claimDaily')+'</button>':'<div class="task-btn done">'+T('taskDone')+'</div>'}
-    </div>`;
 
-    html += d.tasks.map(t=>{
+    const renderTask = (t) => {
       const done = userData&&userData.completedTasks&&userData.completedTasks.includes(t.taskId);
       const ico = getTaskIcon(t.taskId);
       return `<div class="task-card">
@@ -590,7 +601,31 @@ async function loadTasks() {
         <div class="task-info"><div class="task-name">${t.title}</div><div class="task-reward">+ ${t.reward} TON</div></div>
         ${done?'<div class="task-btn done">'+T('taskDone')+'</div>':'<button class="task-btn go" onclick="doTask(\''+t.taskId+'\',\''+(t.link||'')+'\','+t.reward+')">'+T('taskGo')+'</button>'}
       </div>`;
-    }).join('');
+    };
+
+    // Split tasks by category
+    const allTasks = d.tasks || [];
+    const gettingStarted = allTasks.filter(t => t.category === 'getting_started').sort((a,b)=>(a.position||99)-(b.position||99));
+    const partners = allTasks.filter(t => t.category !== 'getting_started');
+
+    let html = '';
+
+    // ─── Getting Started Section ───
+    if (gettingStarted.length > 0) {
+      html += '<div class="sec-hdr" style="margin-top:8px"><span>🚀 Getting Started</span></div>';
+      html += gettingStarted.map(renderTask).join('');
+    }
+
+    // ─── Daily Reward + Partner Tasks ───
+    html += '<div class="sec-hdr" style="margin-top:14px"><span>🎁 Daily &amp; Partners</span></div>';
+    html += `<div class="task-card">
+      <div class="task-icon ${dailyIco.color}"><svg ${svgAttrs}>${dailyIco.svg}</svg></div>
+      <div class="task-info"><div class="task-name">${T('dailyReward')}</div><div class="task-reward">+ 0.005~0.015 TON</div></div>
+      ${canDaily?'<button class="task-btn claim" onclick="claimDaily()">'+T('claimDaily')+'</button>':'<div class="task-btn done">'+T('taskDone')+'</div>'}
+    </div>`;
+    if (partners.length > 0) {
+      html += partners.map(renderTask).join('');
+    }
 
     document.getElementById('tasks-list').innerHTML = html;
   } catch(e) {}
@@ -697,7 +732,7 @@ function updateStats() {
   const minersIco = document.getElementById('stat-ico-miners');
   if (profIco && !profIco.innerHTML) profIco.innerHTML = ic('trending', 22);
   if (minersIco && !minersIco.innerHTML) {
-    minersIco.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18h16v-2a8 8 0 10-16 0v2z" fill="currentColor" opacity="0.2"/><path d="M4 18h16v-2a8 8 0 10-16 0v2z"/><circle cx="12" cy="14" r="1.5" fill="currentColor"/><path d="M12 9v2"/></svg>';
+    minersIco.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3l14 4v3l-14-4z" fill="currentColor" fill-opacity="0.25"/><path d="M5 3l14 4v3l-14-4z"/><path d="M9 6l-7 13 2 2 11-12"/><circle cx="3" cy="20" r="1.5" fill="currentColor"/></svg>`;
   }
   document.getElementById('wallet-card-balance').textContent = (userData.balance||0).toFixed(4)+' TON';
   document.getElementById('wallet-card-usd').textContent = '≈ $'+((userData.balance||0)*5).toFixed(2);
