@@ -732,7 +732,7 @@ function updateStats() {
   const minersIco = document.getElementById('stat-ico-miners');
   if (profIco && !profIco.innerHTML) profIco.innerHTML = ic('trending', 22);
   if (minersIco && !minersIco.innerHTML) {
-    minersIco.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3l14 4v3l-14-4z" fill="currentColor" fill-opacity="0.25"/><path d="M5 3l14 4v3l-14-4z"/><path d="M9 6l-7 13 2 2 11-12"/><circle cx="3" cy="20" r="1.5" fill="currentColor"/></svg>`;
+    minersIco.innerHTML = `<img class="stat-cat" src="images/cat-icon.png" alt="">`;
   }
   document.getElementById('wallet-card-balance').textContent = (userData.balance||0).toFixed(4)+' TON';
   document.getElementById('wallet-card-usd').textContent = '≈ $'+((userData.balance||0)*5).toFixed(2);

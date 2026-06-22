@@ -91,7 +91,7 @@ body::before{
 .hdr-mini-stat{
   background:linear-gradient(135deg,rgba(31,31,46,.85),rgba(19,19,31,.7));
   border:1px solid var(--bd);
-  padding:0 10px;gap:6px;
+  padding:0 12px 0 6px;gap:7px;
 }
 .hdr-mini-stat .mini-ico{
   width:14px;height:14px;color:var(--amber);
@@ -638,6 +638,56 @@ body::before{
 
 ::-webkit-scrollbar{width:3px}
 ::-webkit-scrollbar-thumb{background:var(--bd-glow);border-radius:3px}
+
+/* ============ CAT ICON (premium pickaxe replacement) ============ */
+/* Header mini-stat (small, glowing amber) */
+.mini-cat{
+  width:22px;height:22px;
+  filter:
+    drop-shadow(0 0 6px rgba(240,160,48,.6))
+    drop-shadow(0 0 12px rgba(240,160,48,.3))
+    brightness(1.1);
+  flex-shrink:0;
+  object-fit:contain;
+}
+
+/* Stat card (medium, glowing) */
+.stat-cat{
+  width:32px;height:32px;
+  filter:
+    drop-shadow(0 0 8px rgba(240,160,48,.7))
+    drop-shadow(0 0 16px rgba(240,160,48,.35))
+    brightness(1.15);
+  object-fit:contain;
+  display:inline-block;
+}
+
+/* Bottom nav (large, animated on active) */
+.nav-cat{
+  width:26px;height:26px;
+  filter:grayscale(0.4) brightness(0.85) drop-shadow(0 0 4px rgba(122,122,142,.3));
+  transition:all .2s ease;
+  object-fit:contain;
+}
+.nav-i.active .nav-cat{
+  filter:
+    grayscale(0)
+    brightness(1.15)
+    drop-shadow(0 0 8px rgba(240,160,48,.7))
+    drop-shadow(0 0 16px rgba(240,160,48,.4));
+  animation:cat-bounce .4s ease;
+}
+@keyframes cat-bounce{
+  0%{transform:scale(1)}
+  50%{transform:scale(1.18)}
+  100%{transform:scale(1)}
+}
+
+@media(max-width:380px){
+  .mini-cat{width:20px;height:20px}
+  .stat-cat{width:28px;height:28px}
+  .nav-cat{width:24px;height:24px}
+}
 
 /* ============ INLINE ICON HELPER ============ */
 .ic{display:inline-flex;align-items:center;justify-content:center;vertical-align:-2px;line-height:1;flex-shrink:0}
