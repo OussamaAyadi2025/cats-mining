@@ -91,12 +91,7 @@ body::before{
 .hdr-mini-stat{
   background:linear-gradient(135deg,rgba(31,31,46,.85),rgba(19,19,31,.7));
   border:1px solid var(--bd);
-  padding:0 12px 0 6px;gap:7px;
-}
-.hdr-mini-stat .mini-ico{
-  width:14px;height:14px;color:var(--amber);
-  filter:drop-shadow(0 0 4px var(--amber-glow));
-  flex-shrink:0;
+  padding:0 12px 0 7px;gap:6px;
 }
 .hdr-mini-stat span{font-size:13px;font-weight:800;color:var(--tx);line-height:1}
 
@@ -640,53 +635,74 @@ body::before{
 ::-webkit-scrollbar-thumb{background:var(--bd-glow);border-radius:3px}
 
 /* ============ CAT ICON (premium pickaxe replacement) ============ */
-/* Header mini-stat (small, glowing amber) */
+/* Header mini-stat (small, amber tinted + glow) */
 .mini-cat{
-  width:22px;height:22px;
+  width:22px;height:22px;flex-shrink:0;object-fit:contain;
   filter:
-    drop-shadow(0 0 6px rgba(240,160,48,.6))
-    drop-shadow(0 0 12px rgba(240,160,48,.3))
-    brightness(1.1);
-  flex-shrink:0;
-  object-fit:contain;
+    brightness(0) saturate(100%)
+    invert(72%) sepia(89%) saturate(1234%) hue-rotate(353deg) brightness(102%) contrast(98%)
+    drop-shadow(0 0 4px rgba(240,160,48,.7))
+    drop-shadow(0 0 10px rgba(240,160,48,.4));
 }
 
-/* Stat card (medium, glowing) */
+/* Stat card (medium, amber tinted + strong glow) */
 .stat-cat{
-  width:32px;height:32px;
+  width:36px;height:36px;object-fit:contain;display:inline-block;
   filter:
-    drop-shadow(0 0 8px rgba(240,160,48,.7))
-    drop-shadow(0 0 16px rgba(240,160,48,.35))
-    brightness(1.15);
-  object-fit:contain;
-  display:inline-block;
+    brightness(0) saturate(100%)
+    invert(72%) sepia(89%) saturate(1234%) hue-rotate(353deg) brightness(102%) contrast(98%)
+    drop-shadow(0 0 6px rgba(240,160,48,.7))
+    drop-shadow(0 0 14px rgba(240,160,48,.4));
 }
 
 /* Bottom nav (large, animated on active) */
 .nav-cat{
-  width:26px;height:26px;
-  filter:grayscale(0.4) brightness(0.85) drop-shadow(0 0 4px rgba(122,122,142,.3));
-  transition:all .2s ease;
-  object-fit:contain;
+  width:24px;height:24px;object-fit:contain;
+  filter:
+    brightness(0) saturate(100%)
+    invert(48%) sepia(7%) saturate(450%) hue-rotate(202deg) brightness(94%) contrast(85%);
+  transition:all .25s ease;
 }
 .nav-i.active .nav-cat{
   filter:
-    grayscale(0)
-    brightness(1.15)
-    drop-shadow(0 0 8px rgba(240,160,48,.7))
-    drop-shadow(0 0 16px rgba(240,160,48,.4));
+    brightness(0) saturate(100%)
+    invert(72%) sepia(89%) saturate(1234%) hue-rotate(353deg) brightness(102%) contrast(98%)
+    drop-shadow(0 0 6px rgba(240,160,48,.7))
+    drop-shadow(0 0 12px rgba(240,160,48,.45));
   animation:cat-bounce .4s ease;
 }
 @keyframes cat-bounce{
   0%{transform:scale(1)}
-  50%{transform:scale(1.18)}
+  50%{transform:scale(1.2)}
   100%{transform:scale(1)}
+}
+
+/* Miner card badge */
+.cat-badge{
+  width:14px;height:14px;object-fit:contain;
+  filter:
+    brightness(0) saturate(100%)
+    invert(69%) sepia(95%) saturate(530%) hue-rotate(91deg) brightness(95%) contrast(96%)
+    drop-shadow(0 0 3px rgba(16,185,129,.5));
+}
+.cat-badge.warmup{
+  filter:
+    brightness(0) saturate(100%)
+    invert(72%) sepia(89%) saturate(1234%) hue-rotate(353deg) brightness(102%) contrast(98%)
+    drop-shadow(0 0 3px rgba(240,160,48,.5));
+}
+
+/* In buy button */
+.cat-btn{
+  width:16px;height:16px;object-fit:contain;
+  filter:brightness(0) drop-shadow(0 1px 1px rgba(255,255,255,.3));
+  vertical-align:middle;
 }
 
 @media(max-width:380px){
   .mini-cat{width:20px;height:20px}
-  .stat-cat{width:28px;height:28px}
-  .nav-cat{width:24px;height:24px}
+  .stat-cat{width:30px;height:30px}
+  .nav-cat{width:22px;height:22px}
 }
 
 /* ============ INLINE ICON HELPER ============ */

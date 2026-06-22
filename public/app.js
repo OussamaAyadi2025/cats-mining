@@ -271,14 +271,14 @@ function renderMiners() {
       const am = userData.activeMiners.find(a=>a.minerId===m.id);
       if (am && am.startsEarningAt && new Date()<new Date(am.startsEarningAt)) {
         const h = Math.ceil((new Date(am.startsEarningAt)-new Date())/3600000);
-        badge = '<div class="miner-badge warmup">'+ic('clock',11)+' '+h+'h</div>';
+        badge = '<div class="miner-badge warmup"><img class="cat-badge warmup" src="images/cat-icon.png"> '+h+'h</div>';
       } else {
-        badge = '<div class="miner-badge badge-active">'+ic('pickaxe',11)+' '+T('active')+'</div>';
+        badge = '<div class="miner-badge badge-active"><img class="cat-badge" src="images/cat-icon.png"> '+T('active')+'</div>';
       }
     }
 
     let btnClass = 'buy-btn';
-    let btnText = ic('pickaxe',12)+' '+T('buyFor')+' '+m.price+' TON';
+    let btnText = '<img class="cat-btn" src="images/cat-icon.png"> '+T('buyFor')+' '+m.price+' TON';
     if (isFree && !owned) { btnClass+=' free'; btnText=ic('check',12)+' '+T('claimNow'); }
     else if (m.level===7 && !owned) btnClass+=' premium';
     else if (m.level===8 && !owned) btnClass+=' legendary';
@@ -391,7 +391,7 @@ function showBuyModal(miner, memo) {
       </div>
     </button>
 
-    <div class="buy-info"><span class="ico">${ic('pickaxe',12)}</span> Miner starts earning 24h after verification</div>
+    <div class="buy-info"><img class="cat-btn" src="images/cat-icon.png" style="filter:brightness(0) saturate(100%) invert(72%) sepia(89%) saturate(1234%) hue-rotate(353deg)"> Miner starts earning 24h after verification</div>
   `;
   modal.style.display = 'flex';
 }
