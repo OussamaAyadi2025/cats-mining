@@ -65,11 +65,11 @@ body::before{
 .hdr-logo{width:40px;height:40px;border-radius:11px;object-fit:cover}
 .hdr-name{font-size:14px;font-weight:800;letter-spacing:-.01em;color:var(--tx);line-height:1.1}
 .hdr-sub{font-size:10px;color:var(--dm);font-weight:600;margin-top:2px;line-height:1}
-.header-right{display:flex;align-items:stretch;gap:6px;flex-shrink:0;height:38px}
+.header-right{display:flex;align-items:stretch;gap:6px;flex-shrink:0;height:42px}
 
 /* All header cards same height + style */
 .lang-btn,.hdr-mini-stat,.hdr-balance{
-  height:38px;
+  height:42px;
   border-radius:11px;
   display:flex;align-items:center;justify-content:center;
   cursor:pointer;transition:transform .12s,border-color .15s;
@@ -80,10 +80,10 @@ body::before{
 
 /* Language button */
 .lang-btn{
-  width:38px;
+  width:42px;
   background:linear-gradient(135deg,rgba(31,31,46,.85),rgba(19,19,31,.7));
   border:1px solid var(--bd);
-  font-size:15px;line-height:1;
+  font-size:18px;line-height:1;
 }
 .lang-btn:hover{border-color:var(--bd-glow)}
 
@@ -635,29 +635,29 @@ body::before{
 ::-webkit-scrollbar-thumb{background:var(--bd-glow);border-radius:3px}
 
 /* ============ CAT ICON (premium pickaxe replacement) ============ */
-/* Header mini-stat (small, amber tinted + glow) */
+/* Header mini-stat (LARGER for visibility) */
 .mini-cat{
-  width:22px;height:22px;flex-shrink:0;object-fit:contain;
+  width:28px;height:28px;flex-shrink:0;object-fit:contain;
   filter:
     brightness(0) saturate(100%)
     invert(72%) sepia(89%) saturate(1234%) hue-rotate(353deg) brightness(102%) contrast(98%)
-    drop-shadow(0 0 4px rgba(240,160,48,.7))
-    drop-shadow(0 0 10px rgba(240,160,48,.4));
+    drop-shadow(0 0 5px rgba(240,160,48,.8))
+    drop-shadow(0 0 12px rgba(240,160,48,.45));
 }
 
 /* Stat card (medium, amber tinted + strong glow) */
 .stat-cat{
-  width:36px;height:36px;object-fit:contain;display:inline-block;
+  width:38px;height:38px;object-fit:contain;display:inline-block;
   filter:
     brightness(0) saturate(100%)
     invert(72%) sepia(89%) saturate(1234%) hue-rotate(353deg) brightness(102%) contrast(98%)
-    drop-shadow(0 0 6px rgba(240,160,48,.7))
-    drop-shadow(0 0 14px rgba(240,160,48,.4));
+    drop-shadow(0 0 7px rgba(240,160,48,.8))
+    drop-shadow(0 0 16px rgba(240,160,48,.45));
 }
 
 /* Bottom nav (large, animated on active) */
 .nav-cat{
-  width:24px;height:24px;object-fit:contain;
+  width:26px;height:26px;object-fit:contain;
   filter:
     brightness(0) saturate(100%)
     invert(48%) sepia(7%) saturate(450%) hue-rotate(202deg) brightness(94%) contrast(85%);
@@ -667,8 +667,8 @@ body::before{
   filter:
     brightness(0) saturate(100%)
     invert(72%) sepia(89%) saturate(1234%) hue-rotate(353deg) brightness(102%) contrast(98%)
-    drop-shadow(0 0 6px rgba(240,160,48,.7))
-    drop-shadow(0 0 12px rgba(240,160,48,.45));
+    drop-shadow(0 0 6px rgba(240,160,48,.8))
+    drop-shadow(0 0 14px rgba(240,160,48,.5));
   animation:cat-bounce .4s ease;
 }
 @keyframes cat-bounce{
@@ -677,9 +677,9 @@ body::before{
   100%{transform:scale(1)}
 }
 
-/* Miner card badge */
+/* Miner card badge (small but clear) */
 .cat-badge{
-  width:14px;height:14px;object-fit:contain;
+  width:16px;height:16px;object-fit:contain;
   filter:
     brightness(0) saturate(100%)
     invert(69%) sepia(95%) saturate(530%) hue-rotate(91deg) brightness(95%) contrast(96%)
@@ -692,17 +692,18 @@ body::before{
     drop-shadow(0 0 3px rgba(240,160,48,.5));
 }
 
-/* In buy button */
+/* In buy button (LARGER & PROMINENT) */
 .cat-btn{
-  width:16px;height:16px;object-fit:contain;
-  filter:brightness(0) drop-shadow(0 1px 1px rgba(255,255,255,.3));
+  width:22px;height:22px;object-fit:contain;
+  filter:brightness(0) drop-shadow(0 1px 2px rgba(255,255,255,.25));
   vertical-align:middle;
 }
 
 @media(max-width:380px){
-  .mini-cat{width:20px;height:20px}
-  .stat-cat{width:30px;height:30px}
-  .nav-cat{width:22px;height:22px}
+  .mini-cat{width:24px;height:24px}
+  .stat-cat{width:32px;height:32px}
+  .nav-cat{width:24px;height:24px}
+  .cat-btn{width:20px;height:20px}
 }
 
 /* ============ INLINE ICON HELPER ============ */
