@@ -61,10 +61,13 @@ const userSchema = new mongoose.Schema({
   totalWithdrawn: { type: Number, default: 0 },
   totalDeposited: { type: Number, default: 0 },
   referrals: { type: [String], default: [] },
+  validReferrals: { type: [String], default: [] },                    // Refs that joined payout channel
   referredBy: { type: String, default: null },
-  referralLocked: { type: Boolean, default: false },  // Once set, can't change
+  referralLocked: { type: Boolean, default: false },
+  referralState: { type: String, enum: ['none', 'pending', 'valid'], default: 'none' },
   refCommission: { type: Number, default: 0 },
   completedTasks: { type: [String], default: [] },
+  walletAddress: { type: String, default: null },
   banned: { type: Boolean, default: false },
   withdrawBypass: { type: Boolean, default: false },
   lastDaily: Date,
@@ -78,7 +81,7 @@ const User = mongoose.model('CatsMiningUser', userSchema);
 const referralLogSchema = new mongoose.Schema({
   referrerId: String,
   referredId: String,
-  status: { type: String, enum: ['pending', 'verified', 'rejected', 'paid'], default: 'pending' },
+  status: { type: String, enum: ['pending', 'valid', 'verified', 'rejected', 'paid'], default: 'pending' },
   reason: String,
   commission: { type: Number, default: 0 },
   depositAmount: Number,
@@ -162,16 +165,34 @@ const Withdrawal = mongoose.model('CatsMiningWithdrawal', withdrawalSchema);
 const taskSchema = new mongoose.Schema({
   taskId: { type: String, unique: true },
   title: String,
+  description: String,
   icon: String,
   reward: Number,
+  rewardMin: Number,   // optional random range
+  rewardMax: Number,
+  rewardLabel: String, // Display label like "0.005-0.1"
   link: String,
   type: { type: String, default: 'channel' },
+  category: { type: String, default: 'partner' },  // 'daily' | 'partner'
+  isVerifiedChannel: { type: Boolean, default: false },  // ONLY true for News/Payout where bot is admin
+  isDaily: { type: Boolean, default: false },           // Repeatable every 24h
   requireMiner: { type: Boolean, default: false },
   requireDeposit: { type: Boolean, default: false },
+  requireDepositToday: { type: Boolean, default: false }, // Must have deposit/purchase TODAY
   requireReferrals: { type: Number, default: 0 },
+  requireWallet: { type: Boolean, default: false },
+  position: { type: Number, default: 99 },
   enabled: { type: Boolean, default: true }
 });
 const Task = mongoose.model('CatsMiningTask', taskSchema);
+
+// Daily task completions (resets every 24h)
+const dailyClaimSchema = new mongoose.Schema({
+  telegramId: { type: String, index: true },
+  taskId: String,
+  claimedAt: { type: Date, default: Date.now, index: true }
+});
+const DailyClaim = mongoose.model('CatsMiningDailyClaim', dailyClaimSchema);
 
 // ============ BOT ============
 const bot = new TelegramBot(process.env.BOT_TOKEN);
@@ -632,11 +653,63 @@ app.post('/api/withdrawals/request', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
 // ============ API: TASKS ============
 app.get('/api/tasks', async (req, res) => {
   try {
-    const tasks = await Task.find({ enabled: true });
+    const tgId = (req.query.telegramId || '').toString();
+    const tasks = await Task.find({ enabled: true }).sort({ position: 1 });
+
+    // For daily tasks, check user's cooldown status
+    if (tgId) {
+      const dailyTaskIds = tasks.filter(t => t.isDaily).map(t => t.taskId);
+      if (dailyTaskIds.length > 0) {
+        const recentClaims = await DailyClaim.find({
+          telegramId: tgId,
+          taskId: { $in: dailyTaskIds },
+          claimedAt: { $gte: new Date(Date.now() - 24*60*60*1000) }
+        });
+        const claimMap = {};
+        for (const c of recentClaims) {
+          claimMap[c.taskId] = new Date(c.claimedAt.getTime() + 24*60*60*1000);
+        }
+        const tasksWithStatus = tasks.map(t => {
+          const obj = t.toObject();
+          if (t.isDaily && claimMap[t.taskId]) {
+            obj.onCooldown = true;
+            obj.nextClaim = claimMap[t.taskId];
+          } else {
+            obj.onCooldown = false;
+          }
+          return obj;
+        });
+        return res.json({ success: true, tasks: tasksWithStatus });
+      }
+    }
+
     res.json({ success: true, tasks });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Save user wallet address (from TON Connect)
+app.post('/api/user/wallet', async (req, res) => {
+  try {
+    const { telegramId, walletAddress } = req.body;
+    if (!telegramId || !walletAddress) return res.status(400).json({ error: 'INVALID' });
+    const tgId = telegramId.toString();
+
+    // Check if wallet already used by another account (anti-fraud)
+    const existing = await User.findOne({ walletAddress, telegramId: { $ne: tgId } });
+    if (existing) {
+      console.log(`[SECURITY] ⚠️ Wallet ${walletAddress.slice(0,12)} already used by ${existing.telegramId}, blocked for ${tgId}`);
+      return res.status(400).json({ error: 'WALLET_ALREADY_USED', message: 'This wallet is linked to another account' });
+    }
+
+    await User.findOneAndUpdate({ telegramId: tgId }, { walletAddress });
+    console.log(`[WALLET] ${tgId} connected wallet ${walletAddress.slice(0,12)}...`);
+    res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -649,15 +722,55 @@ app.post('/api/tasks/complete', async (req, res) => {
     const user = await User.findOne({ telegramId: tgId });
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (user.banned) return res.status(403).json({ error: 'ACCOUNT_BANNED' });
-    if (user.completedTasks.includes(taskId)) return res.status(400).json({ error: 'ALREADY_COMPLETED' });
 
     const task = await Task.findOne({ taskId, enabled: true });
     if (!task) return res.status(404).json({ error: 'TASK_NOT_FOUND' });
 
+    // ─── DAILY TASK CHECK (repeatable) ───
+    if (task.isDaily) {
+      // Check if claimed in last 24h
+      const last = await DailyClaim.findOne({
+        telegramId: tgId,
+        taskId,
+        claimedAt: { $gte: new Date(Date.now() - 24*60*60*1000) }
+      });
+      if (last) {
+        const nextClaim = new Date(last.claimedAt.getTime() + 24*60*60*1000);
+        return res.status(400).json({
+          error: 'COOLDOWN',
+          nextClaim,
+          message: 'Come back in 24 hours'
+        });
+      }
+    } else {
+      // Non-daily: check completedTasks
+      if (user.completedTasks.includes(taskId)) {
+        return res.status(400).json({ error: 'ALREADY_COMPLETED' });
+      }
+    }
+
     // ─── SERVER-SIDE TASK VALIDATION ───
 
+    // Task: Buy Miner TODAY — must have purchased a paid miner today
+    if (task.requireDepositToday) {
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      const todayMiner = await ActiveMiner.findOne({
+        telegramId: tgId,
+        price: { $gt: 0 },
+        createdAt: { $gte: startOfToday }
+      });
+      if (!todayMiner) {
+        return res.status(400).json({
+          error: 'NO_MINER_TODAY',
+          message: 'You must purchase a new miner today to claim this reward'
+        });
+      }
+      console.log(`[TASK] ✅ ${tgId} purchased ${todayMiner.minerName} today`);
+    }
+
     // Task: Buy First Miner — verify user owns at least 1 PAID miner (not free Kitty)
-    if (taskId === 't_miner' || taskId.includes('miner') || (task.requireMiner)) {
+    if (taskId === 't_miner' || (task.requireMiner && !task.requireDepositToday)) {
       // Must have a verified PAID deposit, OR an active miner with price > 0
       const hasVerifiedDeposit = await Deposit.findOne({
         telegramId: tgId,
@@ -696,14 +809,16 @@ app.post('/api/tasks/complete', async (req, res) => {
       }
     }
 
-    // Task: Wallet — verify wallet connected (we trust this via frontend signal but flag missing)
-    if (taskId.includes('wallet')) {
-      // No backend check available — must rely on frontend confirmation
-      // Optionally: require user to send wallet address in body
+    // Task: Wallet — verify user has connected wallet
+    if (task.requireWallet || taskId === 't_wallet') {
+      if (!user.walletAddress) {
+        return res.status(400).json({ error: 'NO_WALLET', message: 'Please connect your TON wallet first' });
+      }
     }
 
-    // Task: Channel join — verify via Telegram API
-    if (task.link && task.link.includes('t.me/')) {
+    // Task: Channel join — ONLY verify if isVerifiedChannel flag is set
+    // (News & Payout channels where bot is admin)
+    if (task.isVerifiedChannel && task.link && task.link.includes('t.me/')) {
       const match = task.link.match(/t\.me\/([+a-zA-Z0-9_]+)/);
       if (match) {
         const channel = '@' + match[1].replace('+', '');
@@ -715,24 +830,63 @@ app.post('/api/tasks/complete', async (req, res) => {
             return res.status(400).json({ error: 'NOT_MEMBER', message: 'Please join the channel first' });
           }
           console.log(`[TASK] ✅ ${tgId} verified as member of ${channel}`);
+
+          // If this is PAYOUT_CHANNEL → activate the referral (PENDING → VALID)
+          const payoutChan = (process.env.PROOF_CHANNEL || '').replace('@', '').toLowerCase();
+          const taskChan = match[1].replace('+', '').toLowerCase();
+          if (payoutChan && taskChan === payoutChan && user.referredBy) {
+            const refLog = await ReferralLog.findOne({
+              referrerId: user.referredBy,
+              referredId: tgId
+            });
+            if (refLog && refLog.status === 'pending') {
+              refLog.status = 'valid';
+              refLog.reason = 'joined_payout_channel';
+              refLog.verifiedAt = new Date();
+              await refLog.save();
+              console.log(`[REFERRAL] ✅ ${tgId} VALIDATED for referrer ${user.referredBy}`);
+
+              // Check milestones for referrer
+              checkMilestones(user.referredBy).catch(()=>{});
+            }
+          }
         } catch(e) {
           console.log(`[TASK] ⚠️ Cannot verify ${channel}: ${e.message}`);
-          // If bot is not admin in channel, fail closed (require user to ask admin)
-          return res.status(400).json({ error: 'VERIFY_FAILED', message: 'Cannot verify membership — bot may not be admin in channel' });
+          return res.status(400).json({ error: 'VERIFY_FAILED', message: 'Cannot verify membership — please make sure you joined' });
         }
       }
     }
+    // Partner tasks: NO membership verification, user just clicks link and claims
 
     // ATOMIC reward delivery
+    // Pick reward: if range defined, pick random; else use fixed
+    let finalReward = task.reward;
+    if (task.rewardMin && task.rewardMax && task.rewardMax > task.rewardMin) {
+      finalReward = +(task.rewardMin + Math.random() * (task.rewardMax - task.rewardMin)).toFixed(4);
+    }
+
+    if (task.isDaily) {
+      // Daily task: record claim, no completedTasks push (can repeat)
+      await DailyClaim.create({ telegramId: tgId, taskId });
+      const updated = await User.findOneAndUpdate(
+        { telegramId: tgId },
+        { $inc: { balance: finalReward, totalEarned: finalReward } },
+        { new: true }
+      );
+      console.log(`[TASK-DAILY] ✅ ${tgId} claimed ${taskId} +${finalReward} TON`);
+      return res.json({ success: true, reward: finalReward, newBalance: updated.balance, daily: true });
+    }
+
+    // One-time task
     const updated = await User.findOneAndUpdate(
       { telegramId: tgId, completedTasks: { $ne: taskId } },
-      { $push: { completedTasks: taskId }, $inc: { balance: task.reward, totalEarned: task.reward } },
+      { $push: { completedTasks: taskId }, $inc: { balance: finalReward, totalEarned: finalReward } },
       { new: true }
     );
     if (!updated) return res.status(400).json({ error: 'ALREADY_COMPLETED' });
 
-    console.log(`[TASK] ✅ ${tgId} completed ${taskId} +${task.reward} TON`);
-    res.json({ success: true, reward: task.reward, newBalance: updated.balance });
+    console.log(`[TASK] ✅ ${tgId} completed ${taskId} +${finalReward} TON`);
+    res.json({ success: true, reward: finalReward, newBalance: updated.balance });
   } catch (error) {
     console.error('[TASK] Error:', error.message);
     res.status(500).json({ error: error.message });
@@ -798,22 +952,17 @@ async function checkMilestones(telegramId) {
     const user = await User.findOne({ telegramId: tgId });
     if (!user) return;
 
-    // Count valid referrals (those with verified deposits)
-    let validRefs = 0;
-    for (const refId of user.referrals || []) {
-      const dep = await Deposit.findOne({
-        telegramId: refId.toString(),
-        status: 'verified',
-        amount: { $gte: 0.5 }
-      });
-      if (dep) validRefs++;
-    }
+    // Count VALID referrals: status is valid OR paid in ReferralLog
+    const validCount = await ReferralLog.countDocuments({
+      referrerId: tgId,
+      status: { $in: ['valid', 'paid'] }
+    });
 
-    console.log(`[MILESTONE] ${tgId} has ${validRefs} valid refs`);
+    console.log(`[MILESTONE] ${tgId} has ${validCount} VALID refs`);
 
     // Check each milestone
     for (const ms of MILESTONES) {
-      if (validRefs < ms.refs) continue;
+      if (validCount < ms.refs) continue;
 
       // Already claimed?
       const claimed = await MilestoneClaim.findOne({ telegramId: tgId, milestoneId: ms.id });
@@ -832,14 +981,14 @@ async function checkMilestones(telegramId) {
           minerId: minerConfig.id,
           minerName: minerConfig.name,
           level: minerConfig.level,
-          price: 0,  // Free reward — not a real purchase
+          price: 0,
           daily: minerConfig.daily,
           totalReturn: minerConfig.total,
           startsEarningAt: activateAt,
           expiresAt: new Date(activateAt.getTime() + minerConfig.days * 24 * 60 * 60 * 1000)
         });
 
-        console.log(`[MILESTONE] ✅ ${tgId} earned ${ms.name} for ${ms.refs} refs!`);
+        console.log(`[MILESTONE] ✅ ${tgId} earned ${ms.name} for ${ms.refs} VALID refs!`);
 
         try {
           await bot.sendMessage(tgId,
@@ -848,7 +997,6 @@ async function checkMilestones(telegramId) {
           );
         } catch(e) {}
       } catch(e) {
-        // Duplicate key error means already claimed (race condition)
         console.log(`[MILESTONE] ⏭️ ${tgId} already claimed ${ms.id}`);
       }
     }
@@ -1112,12 +1260,18 @@ async function expireMiners() {
 async function seedTasks() {
   const count = await Task.countDocuments();
   if (count > 0) return;
+  const newsCh = (process.env.NEWS_CHANNEL || '').replace('@','');
+  const payoutCh = (process.env.PROOF_CHANNEL || '').replace('@','');
   await Task.insertMany([
-    { taskId: 't_news', title: 'Join News Channel', icon: '📢', reward: 0.02, link: `https://t.me/${(process.env.NEWS_CHANNEL || '').replace('@','')}`, type: 'channel' },
-    { taskId: 't_payouts', title: 'Join Payouts Channel', icon: '💸', reward: 0.02, link: `https://t.me/${(process.env.PROOF_CHANNEL || '').replace('@','')}`, type: 'channel' },
-    { taskId: 't_miner', title: 'Buy your first miner', icon: '⛏️', reward: 0.05, type: 'action', requireMiner: true, requireDeposit: true }
+    // ─── DAILY TASKS (repeatable every 24h) ───
+    { taskId: 't_daily_reward', title: 'Daily Reward', description: 'Claim your daily bonus', icon: '🎁', rewardMin: 0.005, rewardMax: 0.006, rewardLabel: '0.005-0.1', type: 'daily', category: 'daily', isDaily: true, position: 1 },
+    { taskId: 't_buy_today', title: 'Buy Miner Today', description: 'Purchase a new miner today', icon: '⛏️', rewardMin: 0.005, rewardMax: 0.006, rewardLabel: '0.005-0.1', type: 'daily', category: 'daily', isDaily: true, requireDepositToday: true, position: 2 },
+
+    // ─── CHANNELS (one-time, verified) ───
+    { taskId: 't_news', title: 'Join News Channel', description: 'Stay updated with latest news', icon: '📢', reward: 0.001, link: `https://t.me/${newsCh}`, type: 'channel', category: 'partner', isVerifiedChannel: true, position: 1 },
+    { taskId: 't_payouts', title: 'Join Payout Channel', description: 'See proof of payments', icon: '💸', reward: 0.001, link: `https://t.me/${payoutCh}`, type: 'channel', category: 'partner', isVerifiedChannel: true, position: 2 }
   ]);
-  console.log('✅ Tasks seeded');
+  console.log('✅ Tasks seeded: 2 daily + 2 channels');
 }
 
 // ============ ADMIN AUTH ============
@@ -1136,12 +1290,15 @@ app.get('/api/admin/stats', adminAuth, async (req, res) => {
     const pendingD = await Deposit.countDocuments({ status: 'pending' });
     const verifiedD = await Deposit.countDocuments({ status: 'verified' });
     const bannedUsers = await User.countDocuments({ banned: true });
+    const validRefs = await ReferralLog.countDocuments({ status: { $in: ['valid', 'paid'] } });
+    const pendingRefs = await ReferralLog.countDocuments({ status: 'pending' });
     const totalDepAgg = await Deposit.aggregate([{ $match: { status: 'verified' } }, { $group: { _id: null, total: { $sum: '$amount' } } }]);
     const totalWdAgg = await Withdrawal.aggregate([{ $match: { status: 'approved' } }, { $group: { _id: null, total: { $sum: '$netAmount' } } }]);
     const totalEarnAgg = await User.aggregate([{ $group: { _id: null, total: { $sum: '$totalEarned' } } }]);
     res.json({
       success: true,
       totalUsers, activeMiners, pendingW, pendingD, verifiedD, bannedUsers,
+      validRefs, pendingRefs,
       totalDeposited: totalDepAgg[0]?.total || 0,
       totalWithdrawn: totalWdAgg[0]?.total || 0,
       totalEarned: totalEarnAgg[0]?.total || 0
@@ -1425,15 +1582,18 @@ app.get('/api/admin/tasks', adminAuth, async (req, res) => {
 
 app.post('/api/admin/tasks/create', adminAuth, async (req, res) => {
   try {
-    const { title, icon, reward, link, type, requireMiner, requireDeposit } = req.body;
+    const { title, description, icon, reward, link, type, category, requireMiner, requireDeposit, isVerifiedChannel } = req.body;
     const taskId = 't_' + Math.random().toString(36).substring(2, 8);
     await Task.create({
       taskId,
       title,
+      description: description || '',
       icon: icon || '📋',
       reward: parseFloat(reward) || 0.01,
       link: link || '',
       type: type || 'channel',
+      category: category || 'partner',
+      isVerifiedChannel: !!isVerifiedChannel,  // ONLY admins can set this true (for News/Payout)
       requireMiner: !!requireMiner,
       requireDeposit: !!requireDeposit,
       enabled: true
@@ -1536,12 +1696,23 @@ app.get('/api/admin/player/:id', adminAuth, async (req, res) => {
     const deposits = await Deposit.find({ telegramId: tgId }).sort({ createdAt: -1 });
     const withdrawals = await Withdrawal.find({ telegramId: tgId }).sort({ createdAt: -1 });
 
-    // Count valid referrals (with verified deposits)
-    let validRefs = 0;
-    for (const refId of user.referrals || []) {
-      const dep = await Deposit.findOne({ telegramId: refId.toString(), status: 'verified', amount: { $gte: 0.5 } });
-      if (dep) validRefs++;
-    }
+    // Referrals breakdown from ReferralLog
+    const allRefs = await ReferralLog.find({ referrerId: tgId }).sort({ createdAt: -1 });
+    const validRefs = allRefs.filter(r => ['valid', 'paid'].includes(r.status)).length;
+    const pendingRefs = allRefs.filter(r => r.status === 'pending').length;
+
+    // Get referred user names
+    const refList = await Promise.all(allRefs.slice(0, 50).map(async r => {
+      const u = await User.findOne({ telegramId: r.referredId });
+      return {
+        referredId: r.referredId,
+        firstName: u?.firstName || '-',
+        username: u?.username || '',
+        status: r.status,
+        commission: r.commission || 0,
+        createdAt: r.createdAt
+      };
+    }));
 
     // Claimed milestones
     const claimed = await MilestoneClaim.find({ telegramId: tgId });
@@ -1553,6 +1724,8 @@ app.get('/api/admin/player/:id', adminAuth, async (req, res) => {
       deposits,
       withdrawals,
       validRefs,
+      pendingRefs,
+      referralList: refList,
       claimedMilestones: claimed.map(c => c.milestoneId)
     });
   } catch (error) {
@@ -1575,32 +1748,34 @@ app.get('/api/admin/logs', adminAuth, async (req, res) => {
   }
 });
 
-// Referral leaderboard (top referrers)
+// Referral leaderboard (top referrers by VALID refs)
 app.get('/api/admin/leaderboard', adminAuth, async (req, res) => {
   try {
-    const users = await User.find({ banned: { $ne: true } }).sort({ refCommission: -1 }).limit(50);
-    const board = await Promise.all(users.map(async u => {
-      let validRefs = 0;
-      let totalDeposits = 0;
-      for (const refId of u.referrals || []) {
-        const refUser = await User.findOne({ telegramId: refId.toString() });
-        if (refUser && refUser.totalDeposited > 0) {
-          validRefs++;
-          totalDeposits += refUser.totalDeposited;
-        }
-      }
+    // Aggregate ReferralLog: count valid/paid per referrer
+    const agg = await ReferralLog.aggregate([
+      { $match: { status: { $in: ['valid', 'paid'] } } },
+      { $group: { _id: '$referrerId', validCount: { $sum: 1 }, totalCommission: { $sum: '$commission' }, totalDeposits: { $sum: '$depositAmount' } } },
+      { $sort: { validCount: -1 } },
+      { $limit: 50 }
+    ]);
+
+    const board = await Promise.all(agg.map(async row => {
+      const u = await User.findOne({ telegramId: row._id });
+      if (!u || u.banned) return null;
+      const totalRefs = (u.referrals || []).length;
       return {
         telegramId: u.telegramId,
         firstName: u.firstName,
         username: u.username,
-        totalRefs: (u.referrals || []).length,
-        validRefs,
-        totalDeposits,
-        commission: u.refCommission || 0
+        totalRefs,
+        validRefs: row.validCount,
+        pendingRefs: totalRefs - row.validCount,
+        totalDeposits: row.totalDeposits || 0,
+        commission: row.totalCommission || u.refCommission || 0
       };
     }));
-    board.sort((a, b) => b.commission - a.commission);
-    res.json({ success: true, leaderboard: board });
+
+    res.json({ success: true, leaderboard: board.filter(Boolean) });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1682,12 +1857,33 @@ app.get('/api/admin/milestones', adminAuth, async (req, res) => {
 app.post('/api/admin/reseed-tasks', adminAuth, async (req, res) => {
   try {
     await Task.deleteMany({});
+    const newsCh = (process.env.NEWS_CHANNEL || '').replace('@','');
+    const payoutCh = (process.env.PROOF_CHANNEL || '').replace('@','');
     await Task.insertMany([
-      { taskId: 't_news', title: 'Join News Channel', icon: '📢', reward: 0.02, link: `https://t.me/${(process.env.NEWS_CHANNEL || '').replace('@','')}`, type: 'channel' },
-      { taskId: 't_payouts', title: 'Join Payouts Channel', icon: '💸', reward: 0.02, link: `https://t.me/${(process.env.PROOF_CHANNEL || '').replace('@','')}`, type: 'channel' },
-      { taskId: 't_miner', title: 'Buy your first miner', icon: '⛏️', reward: 0.05, type: 'action', requireMiner: true, requireDeposit: true }
+      // ── DAILY (repeatable) ──
+      {
+        taskId: 't_daily_reward', title: 'Daily Reward', description: 'Claim your daily bonus',
+        icon: '🎁', rewardMin: 0.005, rewardMax: 0.006, rewardLabel: '0.005-0.1',
+        type: 'daily', category: 'daily', isDaily: true, position: 1
+      },
+      {
+        taskId: 't_buy_today', title: 'Buy Miner Today', description: 'Purchase a new miner today',
+        icon: '⛏️', rewardMin: 0.005, rewardMax: 0.006, rewardLabel: '0.005-0.1',
+        type: 'daily', category: 'daily', isDaily: true, requireDepositToday: true, position: 2
+      },
+      // ── CHANNELS (one-time, verified) ──
+      {
+        taskId: 't_news', title: 'Join News Channel', description: 'Stay updated with latest news',
+        icon: '📢', reward: 0.001, link: `https://t.me/${newsCh}`,
+        type: 'channel', category: 'partner', isVerifiedChannel: true, position: 1
+      },
+      {
+        taskId: 't_payouts', title: 'Join Payout Channel', description: 'See proof of payments',
+        icon: '💸', reward: 0.001, link: `https://t.me/${payoutCh}`,
+        type: 'channel', category: 'partner', isVerifiedChannel: true, position: 2
+      }
     ]);
-    res.json({ success: true, message: 'Tasks reseeded' });
+    res.json({ success: true, message: 'Tasks reseeded: 2 daily + 2 channels' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
