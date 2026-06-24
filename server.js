@@ -1312,23 +1312,58 @@ app.post('/api/daily-claim', strictLimiter, async (req, res) => {
 // ============ API: REFERRALS ============
 app.get('/api/referrals/:telegramId', async (req, res) => {
   try {
-    const user = await User.findOne({ telegramId: req.params.telegramId });
+    const tgId = req.params.telegramId;
+    const user = await User.findOne({ telegramId: tgId });
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const refs = [];
-    for (const refId of user.referrals) {
-      const refUser = await User.findOne({ telegramId: refId });
-      if (refUser) {
-        refs.push({
-          telegramId: refUser.telegramId,
-          firstName: refUser.firstName,
-          totalDeposited: refUser.totalDeposited,
-          isPaid: refUser.totalDeposited >= 0.5
-        });
-      }
+    // Get all referral logs for this user
+    const logs = await ReferralLog.find({ referrerId: tgId });
+    const logMap = {};
+    for (const log of logs) {
+      logMap[log.referredId] = log;
     }
 
-    res.json({ success: true, referrals: refs, total: refs.length, commission: user.refCommission });
+    const refs = [];
+    let validCount = 0;
+    let pendingCount = 0;
+
+    for (const refId of user.referrals) {
+      const refUser = await User.findOne({ telegramId: refId });
+      if (!refUser) continue;
+
+      const log = logMap[refId];
+      const status = log ? log.status : 'pending';
+      const isValid = status === 'valid' || status === 'paid';
+
+      if (isValid) validCount++;
+      else pendingCount++;
+
+      refs.push({
+        telegramId: refUser.telegramId,
+        firstName: refUser.firstName,
+        totalDeposited: refUser.totalDeposited,
+        isPaid: refUser.totalDeposited >= 0.5,
+        status,           // 'pending' | 'valid' | 'paid'
+        isValid,
+        joinedAt: refUser.createdAt,
+        validatedAt: log?.verifiedAt
+      });
+    }
+
+    // Sort: valid first, then by date (newest first)
+    refs.sort((a, b) => {
+      if (a.isValid !== b.isValid) return b.isValid - a.isValid;
+      return new Date(b.joinedAt) - new Date(a.joinedAt);
+    });
+
+    res.json({
+      success: true,
+      referrals: refs,
+      total: refs.length,
+      validCount,
+      pendingCount,
+      commission: user.refCommission
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

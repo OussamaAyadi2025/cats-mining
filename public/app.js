@@ -586,6 +586,8 @@ async function collectEarnings() {
     const d = await r.json();
     if (d.success) {
       if (d.collected > 0) {
+        // 🎉 SUCCESS ANIMATION
+        showCollectAnimation(d.collected, btn);
         toast('+ '+d.collected.toFixed(4)+' TON');
       } else {
         toast('⏳ Nothing to collect yet');
@@ -599,7 +601,6 @@ async function collectEarnings() {
     }
   } catch(e) { toast('⚠ Network error'); }
   finally {
-    // Re-enable after 2s (visual + extra safety)
     setTimeout(() => {
       collectInFlight = false;
       if (btn) {
@@ -609,6 +610,47 @@ async function collectEarnings() {
         btn.textContent = oldText;
       }
     }, 2000);
+  }
+}
+
+function showCollectAnimation(amount, sourceBtn) {
+  // Floating amount text
+  const rect = sourceBtn ? sourceBtn.getBoundingClientRect() : { left: window.innerWidth/2-50, top: window.innerHeight/2, width: 100, height: 40 };
+  const float = document.createElement('div');
+  float.className = 'collect-float';
+  float.textContent = '+ ' + amount.toFixed(4) + ' TON';
+  float.style.left = (rect.left + rect.width/2 - 60) + 'px';
+  float.style.top = (rect.top - 10) + 'px';
+  document.body.appendChild(float);
+  setTimeout(() => float.remove(), 1800);
+
+  // Coin burst (8 coins)
+  for (let i = 0; i < 8; i++) {
+    const coin = document.createElement('div');
+    coin.className = 'collect-coin';
+    coin.textContent = '🪙';
+    coin.style.left = (rect.left + rect.width/2) + 'px';
+    coin.style.top = (rect.top + rect.height/2) + 'px';
+    const angle = (Math.PI * 2 / 8) * i;
+    const dist = 60 + Math.random() * 50;
+    coin.style.setProperty('--dx', Math.cos(angle) * dist + 'px');
+    coin.style.setProperty('--dy', Math.sin(angle) * dist + 'px');
+    coin.style.animationDelay = (i * 0.04) + 's';
+    document.body.appendChild(coin);
+    setTimeout(() => coin.remove(), 1500);
+  }
+
+  // Button flash effect
+  if (sourceBtn) {
+    sourceBtn.classList.add('collect-flash');
+    setTimeout(() => sourceBtn.classList.remove('collect-flash'), 600);
+  }
+
+  // Balance number ticker animation
+  const balEl = document.getElementById('hdr-balance');
+  if (balEl) {
+    balEl.classList.add('balance-bump');
+    setTimeout(() => balEl.classList.remove('balance-bump'), 800);
   }
 }
 
@@ -936,11 +978,43 @@ async function loadReferrals() {
     if (!d.success) return;
     document.getElementById('ref-count').textContent = d.total;
     document.getElementById('ref-commission').textContent = d.commission.toFixed(2);
-    if (d.referrals.length>0) {
-      document.getElementById('ref-list').innerHTML = d.referrals.map(ref=>{
+
+    // Update stats grid (valid + pending)
+    const statsBox = document.getElementById('ref-stats-extra');
+    if (statsBox) {
+      statsBox.innerHTML = `
+        <div class="ref-mini-stat valid">
+          <div class="ref-mini-val">${d.validCount||0}</div>
+          <div class="ref-mini-lbl">✓ Valid</div>
+        </div>
+        <div class="ref-mini-stat pending">
+          <div class="ref-mini-val">${d.pendingCount||0}</div>
+          <div class="ref-mini-lbl">⏳ Pending</div>
+        </div>
+      `;
+    }
+
+    if (d.referrals.length > 0) {
+      document.getElementById('ref-list').innerHTML = d.referrals.map(ref => {
         const ico = TASK_ICONS.t_invite;
-        return `<div class="task-card"><div class="task-icon purple"><svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" stroke="currentColor">${ico.svg}</svg></div><div class="task-info"><div class="task-name">${ref.firstName||'User'}</div><div class="task-reward">${ref.isPaid?ic('checkSimple',11)+' Paid':ic('clock',11)+' Free'}</div></div></div>`;
+        let badge;
+        if (ref.status === 'paid') {
+          badge = '<span class="ref-badge paid">💎 Paid</span>';
+        } else if (ref.status === 'valid' || ref.isValid) {
+          badge = '<span class="ref-badge valid">✓ Valid</span>';
+        } else {
+          badge = '<span class="ref-badge pending">⏳ Pending</span>';
+        }
+        return `<div class="task-card ref-card-item">
+          <div class="task-icon purple"><svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" stroke="currentColor">${ico.svg}</svg></div>
+          <div class="task-info">
+            <div class="task-name">${ref.firstName||'User'}</div>
+            <div class="task-reward">${badge}</div>
+          </div>
+        </div>`;
       }).join('');
+    } else {
+      document.getElementById('ref-list').innerHTML = '<div style="text-align:center;color:var(--dm);padding:30px;font-size:13px">No referrals yet · Share your link!</div>';
     }
   } catch(e) {}
 }
