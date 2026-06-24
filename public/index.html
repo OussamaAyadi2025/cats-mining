@@ -297,20 +297,42 @@
         <div class="partner-modal-icon">
           <img src="images/partner-icon.png" alt="" onerror="this.outerHTML='<svg viewBox=&quot;0 0 24 24&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;2&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;><circle cx=&quot;8&quot; cy=&quot;12&quot; r=&quot;4&quot;/><circle cx=&quot;16&quot; cy=&quot;12&quot; r=&quot;4&quot;/></svg>'">
         </div>
-        <h3 class="partner-modal-title">Become a Partner</h3>
-        <p class="partner-modal-sub">Promote Cats Mining in your Telegram channel</p>
+        <h3 class="partner-modal-title" id="pm-title">Apply for Partnership</h3>
+        <p class="partner-modal-sub" id="pm-sub">Earn TON for promoting Cats Mining</p>
       </div>
+
       <div class="partner-modal-body">
-        <div class="partner-field">
-          <label class="partner-label">Channel Link</label>
-          <input type="text" class="partner-input" id="partner-link" placeholder="https://t.me/yourchannel" maxlength="100">
+        <!-- Rewards block -->
+        <div class="partner-rewards-modal">
+          <div class="prm-title" id="pm-rewards-title">💎 Reward Tiers</div>
+          <div class="prm-row"><span id="pm-tier1">Small channel (under 1K)</span><b>+1 TON</b></div>
+          <div class="prm-row"><span id="pm-tier2">Medium channel (1K-10K)</span><b>+3 TON</b></div>
+          <div class="prm-row"><span id="pm-tier3">Large channel (over 10K)</span><b>+5 TON</b></div>
         </div>
-        <div class="partner-field">
-          <label class="partner-label">Description (optional)</label>
-          <textarea class="partner-input partner-textarea" id="partner-desc" placeholder="Tell us about your channel..." maxlength="300"></textarea>
+
+        <!-- Instructions -->
+        <div class="partner-instructions">
+          <div class="pi-title" id="pm-steps-title">📋 How to apply:</div>
+          <ol class="pi-list">
+            <li id="pm-step1"><b>Post about Cats Mining</b> in your Telegram channel (include the bot link: @MiningCatsBot)</li>
+            <li id="pm-step2"><b>Copy the message link</b> (long-press the post → "Copy Link")</li>
+            <li id="pm-step3"><b>Paste it below</b> and submit. We'll review within 24h</li>
+          </ol>
+          <div class="pi-warning" id="pm-warning">⚠️ Don't send your channel link — send the link of your <b>post</b> about Cats Mining</div>
         </div>
-        <button class="partner-submit" onclick="submitPartnerRequest()">Submit Partnership Request</button>
-        <button class="partner-cancel" onclick="closePartnerModal()">Cancel</button>
+
+        <div class="partner-field">
+          <label class="partner-label" id="pm-link-label">🔗 Post link (the message promoting our bot)</label>
+          <input type="text" class="partner-input" id="partner-link" placeholder="https://t.me/yourchannel/123" maxlength="200">
+        </div>
+
+        <div class="partner-field">
+          <label class="partner-label" id="pm-notes-label">💬 Additional notes (optional)</label>
+          <textarea class="partner-input partner-textarea" id="partner-desc" placeholder="Audience size, niche, etc..." maxlength="300"></textarea>
+        </div>
+
+        <button class="partner-submit" onclick="submitPartnerRequest()" id="pm-submit-btn">Submit Application</button>
+        <button class="partner-cancel" onclick="closePartnerModal()" id="pm-cancel-btn">Cancel</button>
       </div>
     </div>
   </div>

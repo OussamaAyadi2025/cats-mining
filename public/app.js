@@ -217,6 +217,48 @@ document.addEventListener('click', e => {
     document.getElementById('lang-menu').style.display='none';
 });
 
+// Switch language and re-render everything
+function setLang(lang) {
+  if (!LANGS[lang]) return;
+  currentLang = lang;
+  try { localStorage.setItem('catsmining_lang', lang); } catch(e) {}
+
+  // Close menu
+  const menu = document.getElementById('lang-menu');
+  if (menu) menu.style.display = 'none';
+
+  // Re-render all UI text
+  renderAll();
+
+  // Re-render all dynamic pages
+  if (typeof renderMiners === 'function') renderMiners();
+  if (typeof loadTasks === 'function') loadTasks();
+  if (typeof loadReferrals === 'function') loadReferrals();
+  if (typeof updateStats === 'function') updateStats();
+  if (typeof renderEventBanner === 'function' && activeEvent) renderEventBanner();
+
+  // Update partner modal text manually (since it's static HTML)
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+  set('pm-title', T('pmTitle'));
+  set('pm-sub', T('pmSub'));
+  set('pm-rewards-title', T('pmRewardsTitle'));
+  set('pm-tier1', T('smallChannel'));
+  set('pm-tier2', T('mediumChannel'));
+  set('pm-tier3', T('largeChannel'));
+  set('pm-steps-title', T('pmStepsTitle'));
+  set('pm-step1', T('pmStep1'));
+  set('pm-step2', T('pmStep2'));
+  set('pm-step3', T('pmStep3'));
+  set('pm-warning', T('pmWarning'));
+  set('pm-link-label', T('pmLinkLabel'));
+  set('pm-notes-label', T('pmNotesLabel'));
+  set('pm-submit-btn', T('pmSubmit'));
+  set('pm-cancel-btn', T('cancel'));
+
+  toast('✓ ' + LANGS[lang].name);
+}
+window.setLang = setLang;
+
 // ============ RENDER ALL ============
 function renderAll() {
   if (typeof LANGS === 'undefined') return;
@@ -889,9 +931,14 @@ async function loadTasks() {
           <img src="images/partner-icon.png" alt="" onerror="this.outerHTML='<svg viewBox=&quot;0 0 24 24&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;2&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;><circle cx=&quot;8&quot; cy=&quot;12&quot; r=&quot;4&quot;/><circle cx=&quot;16&quot; cy=&quot;12&quot; r=&quot;4&quot;/></svg>'">
         </div>
         <div class="partner-card-body">
-          <div class="partner-card-title">Become a Partner</div>
-          <div class="partner-card-desc">Promote Cats Mining in your Telegram channel and earn exposure</div>
-          <button class="partner-card-btn" onclick="openPartnerModal()">Submit Request</button>
+          <div class="partner-card-title">${T('partnerTitle')}</div>
+          <div class="partner-card-desc">${T('partnerDesc')}</div>
+          <div class="partner-rewards">
+            <div class="pr-row"><span class="pr-tier">${T('smallChannel')}</span><span class="pr-amount">+1 TON</span></div>
+            <div class="pr-row"><span class="pr-tier">${T('mediumChannel')}</span><span class="pr-amount">+3 TON</span></div>
+            <div class="pr-row"><span class="pr-tier">${T('largeChannel')}</span><span class="pr-amount">+5 TON</span></div>
+          </div>
+          <button class="partner-card-btn" onclick="openPartnerModal()">${T('applyNow')}</button>
         </div>
       </div>`;
 
@@ -1039,7 +1086,7 @@ function openWithdraw() {
     <div class="modal-row"><div class="modal-label">${T('balance')}: <span style="color:var(--amber-l)">${(userData?userData.balance:0).toFixed(2)} TON</span></div></div>
     <div class="modal-row"><div class="modal-label">${T('amount')}</div><input class="modal-input" type="number" id="w-amount" placeholder="1.5" min="1.5" step="0.1"></div>
     <div class="modal-row"><div class="modal-label">${T('walletAddress')}</div><input class="modal-input" type="text" id="w-wallet" placeholder="UQ..."></div>
-    <div class="modal-fee">${T('fee')}: 5% · Min: 1.5 TON</div>
+    <div class="modal-fee">${T('fee')}: 5% · Min: 0.1 TON</div>
     <div id="w-preview" style="font-size:12px;color:var(--dm);margin-bottom:12px"></div>
     <button class="modal-btn" onclick="submitWithdraw()">${T('submit')}</button>`;
   document.getElementById('w-amount').addEventListener('input',function(){const a=parseFloat(this.value)||0;const fee=a*0.05;document.getElementById('w-preview').textContent=a>0?T('youReceive')+': '+(a-fee).toFixed(4)+' TON ('+T('fee')+': '+fee.toFixed(4)+')':'';});
@@ -1050,7 +1097,7 @@ async function submitWithdraw() {
   if (!userData) return;
   const amount=parseFloat(document.getElementById('w-amount').value);
   const wallet=document.getElementById('w-wallet').value.trim();
-  if (!amount||amount<1.5){toast('⚠ Min 1.5 TON');return;}
+  if (!amount||amount<0.1){toast('⚠ Min 0.1 TON');return;}
   if (!wallet||wallet.length<20){toast('⚠ Invalid wallet');return;}
   try {
     const r = await fetch(API+'/api/withdrawals/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({telegramId:userData.telegramId,amount,walletAddress:wallet})});
@@ -1060,7 +1107,7 @@ async function submitWithdraw() {
       if (d.error==='DEPOSIT_REQUIRED') toast('⊘ '+T('depositRequired'));
       else if (d.error==='REFS_REQUIRED') toast('⊘ '+T('refsRequired')+' ('+(d.current||0)+'/2)');
       else if (d.error==='INSUFFICIENT') toast('⚠ '+T('insufficientBalance'));
-      else if (d.error==='MIN_AMOUNT') toast('⚠ Min 1.5 TON');
+      else if (d.error==='MIN_AMOUNT') toast('⚠ Min 0.1 TON');
       else if (d.error==='PENDING_EXISTS') toast('⚠ You have a pending withdrawal');
       else toast('⚠ '+(d.message||d.error));
     }
