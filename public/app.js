@@ -756,21 +756,40 @@ function renderEventBanner() {
 
     banner.style.display = 'block';
     banner.innerHTML = `
-      <div class="event-glow"></div>
-      <div class="event-content">
-        <div class="event-icon">⚡</div>
-        <div class="event-info">
-          <div class="event-title">${activeEvent.name}</div>
-          <div class="event-discount">-${activeEvent.discountPercent}% on all miners</div>
+      <div class="sale-banner-bg"></div>
+      <div class="sale-banner-shine"></div>
+
+      <div class="sale-left">
+        <div class="sale-fire">🔥</div>
+        <div class="sale-percent">
+          <div class="sale-percent-num">-${activeEvent.discountPercent}<span>%</span></div>
+          <div class="sale-label">SALE</div>
         </div>
-        <div class="event-timer">
-          <div class="ev-unit"><span class="ev-val">${days}</span><span class="ev-lbl">D</span></div>
-          <div class="ev-sep">:</div>
-          <div class="ev-unit"><span class="ev-val">${String(hours).padStart(2,'0')}</span><span class="ev-lbl">H</span></div>
-          <div class="ev-sep">:</div>
-          <div class="ev-unit"><span class="ev-val">${String(mins).padStart(2,'0')}</span><span class="ev-lbl">M</span></div>
-          <div class="ev-sep">:</div>
-          <div class="ev-unit"><span class="ev-val">${String(secs).padStart(2,'0')}</span><span class="ev-lbl">S</span></div>
+      </div>
+
+      <div class="sale-right">
+        <div class="sale-title">⚡ ${activeEvent.name}</div>
+        <div class="sale-sub">Save on all miners!</div>
+        <div class="sale-countdown">
+          <div class="sc-box">
+            <div class="sc-num">${days}</div>
+            <div class="sc-lbl">DAYS</div>
+          </div>
+          <div class="sc-dots">:</div>
+          <div class="sc-box">
+            <div class="sc-num">${String(hours).padStart(2,'0')}</div>
+            <div class="sc-lbl">HRS</div>
+          </div>
+          <div class="sc-dots">:</div>
+          <div class="sc-box">
+            <div class="sc-num">${String(mins).padStart(2,'0')}</div>
+            <div class="sc-lbl">MIN</div>
+          </div>
+          <div class="sc-dots">:</div>
+          <div class="sc-box pulse">
+            <div class="sc-num">${String(secs).padStart(2,'0')}</div>
+            <div class="sc-lbl">SEC</div>
+          </div>
         </div>
       </div>
     `;
