@@ -15,7 +15,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static('public'));
 
 // Trust proxy (Render uses reverse proxy)
@@ -2009,6 +2009,61 @@ app.post('/api/admin/reject-withdrawal-old-removed', adminAuth, async (req, res)
 
 app.post('/api/admin/reject-withdrawal-old-removed-v2', adminAuth, async (req, res) => {
   res.status(410).json({ error: 'use /api/admin/reject-withdrawal' });
+});
+
+// Upload broadcast image - saves to disk + returns public URL
+const fs = require('fs');
+app.post('/api/admin/upload-image', adminAuth, async (req, res) => {
+  try {
+    const { image, ext } = req.body;
+    if (!image) return res.status(400).json({ error: 'NO_IMAGE' });
+
+    // Validate ext
+    const safeExt = ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes((ext || '').toLowerCase())
+      ? ext.toLowerCase()
+      : 'png';
+
+    // Decode base64
+    const buffer = Buffer.from(image, 'base64');
+    if (buffer.length > 5 * 1024 * 1024) {
+      return res.status(400).json({ error: 'TOO_LARGE' });
+    }
+
+    // Create uploads directory if doesn't exist
+    const uploadsDir = path.join(__dirname, 'public', 'images', 'uploads');
+    try {
+      if (!fs.existsSync(uploadsDir)) {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+      }
+    } catch(e) { /* may fail on read-only fs */ }
+
+    // Generate unique filename
+    const filename = `bc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${safeExt}`;
+    const filepath = path.join(uploadsDir, filename);
+
+    try {
+      fs.writeFileSync(filepath, buffer);
+    } catch(writeErr) {
+      // If can't write to disk (Render filesystem ephemeral), fall back to base64 data URL
+      console.warn('[UPLOAD] Cannot write to disk:', writeErr.message);
+      // Return base64 data URL — works for preview but Telegram won't accept it
+      // Better: tell user to use imgur
+      return res.status(500).json({
+        error: 'Filesystem write failed. Please use imgur.com and paste URL manually.',
+        hint: 'Render free tier has ephemeral filesystem.'
+      });
+    }
+
+    // Public URL (served by Vercel from /public/images/uploads/)
+    // BUT: since backend is Render and frontend is Vercel, we need to use Render URL
+    const publicUrl = `https://cats-mining-backend.onrender.com/images/uploads/${filename}`;
+
+    console.log(`[UPLOAD] Image saved: ${filename} (${buffer.length} bytes)`);
+    res.json({ success: true, url: publicUrl, filename });
+  } catch (error) {
+    console.error('[UPLOAD]', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.post('/api/admin/broadcast', adminAuth, async (req, res) => {

@@ -399,10 +399,17 @@ textarea.inp{resize:vertical;min-height:90px;font-family:var(--mono);font-size:1
     <div class="panel" id="pan-broadcast">
       <div class="section">
         <h3>📤 Send Broadcast to All Users</h3>
+
         <div class="field">
-          <label>Image URL (optional)</label>
-          <input class="inp" id="bcImage" placeholder="https://i.imgur.com/yourimage.jpg" oninput="previewBC()">
+          <label>📷 Image (upload OR paste URL)</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="file" id="bcImageFile" accept="image/*" style="display:none" onchange="handleBCImageUpload(event)">
+            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('bcImageFile').click()" style="white-space:nowrap">📤 Upload Image</button>
+            <input class="inp" id="bcImage" placeholder="https://i.imgur.com/yourimage.jpg" oninput="previewBC()" style="flex:1">
+          </div>
+          <div id="bcImageStatus" style="font-size:11px;color:var(--dim);margin-top:6px"></div>
         </div>
+
         <div class="field">
           <label>Message (HTML: &lt;b&gt;bold&lt;/b&gt; &lt;i&gt;italic&lt;/i&gt; &lt;a href=""&gt;link&lt;/a&gt;)</label>
           <textarea class="inp" id="bcMsg" placeholder="🎉 <b>Big update!</b>%0AClaim your bonus now!" oninput="previewBC()"></textarea>
@@ -1060,6 +1067,50 @@ async function bypassWd(v){
 }
 
 // ─── BROADCAST ───
+// Upload image directly to backend - saves to /home/claude/cats-mining/public/images/uploads/
+async function handleBCImageUpload(event){
+  var file = event.target.files[0];
+  if(!file) return;
+
+  if(file.size > 5 * 1024 * 1024){
+    toast('⚠ Image too large (max 5MB)', true);
+    return;
+  }
+
+  var statusEl = document.getElementById('bcImageStatus');
+  statusEl.innerHTML = '⏳ Uploading...';
+
+  try {
+    var reader = new FileReader();
+    reader.onload = async function(e){
+      try {
+        var base64 = e.target.result.split(',')[1];
+        var ext = (file.name.split('.').pop() || 'png').toLowerCase();
+
+        var r = await fetch(API + '/api/admin/upload-image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-admin-key': KEY },
+          body: JSON.stringify({ image: base64, ext: ext })
+        });
+        var data = await r.json();
+
+        if(data && data.success && data.url){
+          document.getElementById('bcImage').value = data.url;
+          statusEl.innerHTML = '<span style="color:var(--green)">✓ Uploaded! URL: ' + data.url.substring(0, 60) + '...</span>';
+          previewBC();
+        } else {
+          throw new Error(data.error || 'Upload failed');
+        }
+      } catch(err) {
+        statusEl.innerHTML = '<span style="color:var(--red)">⚠ ' + err.message + '. Try imgur.com manually.</span>';
+      }
+    };
+    reader.readAsDataURL(file);
+  } catch(err){
+    statusEl.innerHTML = '<span style="color:var(--red)">⚠ ' + err.message + '</span>';
+  }
+}
+
 function previewBC(){
   var img=document.getElementById('bcImage').value.trim();
   var msg=document.getElementById('bcMsg').value;
