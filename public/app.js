@@ -885,7 +885,9 @@ async function loadTasks() {
       // Channels tab — include Partner card at top
       html += `<div class="partner-card" id="partner-card">
         <div class="partner-card-glow"></div>
-        <div class="partner-card-icon">🤝</div>
+        <div class="partner-card-icon">
+          <img src="images/partner-icon.png" alt="" onerror="this.outerHTML='<svg viewBox=&quot;0 0 24 24&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;2&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot;><circle cx=&quot;8&quot; cy=&quot;12&quot; r=&quot;4&quot;/><circle cx=&quot;16&quot; cy=&quot;12&quot; r=&quot;4&quot;/></svg>'">
+        </div>
         <div class="partner-card-body">
           <div class="partner-card-title">Become a Partner</div>
           <div class="partner-card-desc">Promote Cats Mining in your Telegram channel and earn exposure</div>

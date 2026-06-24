@@ -473,11 +473,17 @@ body::before{
 }
 .partner-card-icon{
   display:inline-flex;align-items:center;justify-content:center;
-  width:42px;height:42px;font-size:22px;
-  background:linear-gradient(135deg,rgba(0,152,234,.25),rgba(0,152,234,.1));
-  border:1px solid rgba(0,152,234,.35);border-radius:10px;
-  margin-bottom:10px;position:relative;
+  width:48px;height:48px;
+  background:linear-gradient(135deg,rgba(0,152,234,.25),rgba(240,160,48,.15));
+  border:1px solid rgba(0,152,234,.4);border-radius:12px;
+  margin-bottom:12px;position:relative;overflow:hidden;
+  box-shadow:0 4px 12px rgba(0,152,234,.2),inset 0 1px 0 rgba(255,255,255,.08);
 }
+.partner-card-icon img,.partner-card-icon svg{
+  width:30px;height:30px;object-fit:contain;
+  filter:drop-shadow(0 0 6px rgba(0,152,234,.5));
+}
+.partner-card-icon svg{color:var(--blue-l)}
 .partner-card-body{position:relative}
 .partner-card-title{font-size:15px;font-weight:800;color:#fff;letter-spacing:-.01em}
 .partner-card-desc{font-size:12px;color:var(--dm);margin:6px 0 12px;line-height:1.5}
@@ -498,11 +504,17 @@ body::before{
 .partner-modal-header{text-align:center;margin-bottom:18px}
 .partner-modal-icon{
   display:inline-flex;align-items:center;justify-content:center;
-  width:56px;height:56px;font-size:30px;margin:0 auto 12px;
-  background:linear-gradient(135deg,rgba(0,152,234,.25),rgba(240,160,48,.1));
-  border:1px solid rgba(0,152,234,.4);border-radius:14px;
-  box-shadow:0 0 24px rgba(0,152,234,.2);
+  width:64px;height:64px;margin:0 auto 14px;
+  background:linear-gradient(135deg,rgba(0,152,234,.25),rgba(240,160,48,.15));
+  border:1px solid rgba(0,152,234,.4);border-radius:16px;
+  box-shadow:0 0 28px rgba(0,152,234,.25),inset 0 1px 0 rgba(255,255,255,.1);
+  overflow:hidden;
 }
+.partner-modal-icon img,.partner-modal-icon svg{
+  width:42px;height:42px;object-fit:contain;
+  filter:drop-shadow(0 0 8px rgba(0,152,234,.6));
+}
+.partner-modal-icon svg{color:var(--blue-l)}
 .partner-modal-title{
   font-size:18px;font-weight:800;color:#fff;letter-spacing:-.02em;
   background:linear-gradient(135deg,#fff,var(--blue-l));
