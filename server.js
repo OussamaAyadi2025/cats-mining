@@ -21,9 +21,57 @@ app.use(express.static('public'));
 // Trust proxy (Render uses reverse proxy)
 app.set('trust proxy', 1);
 
-// Rate limit
+// ============ RATE LIMITING ============
 const limiter = rateLimit({ windowMs: 60000, max: 100 });
 app.use('/api/', limiter);
+
+// Strict limit on write endpoints (prevent spam/abuse)
+const strictLimiter = rateLimit({
+  windowMs: 60000,   // 1 minute
+  max: 20,            // 20 requests/min
+  message: { error: 'RATE_LIMIT', message: 'Too many requests, slow down' }
+});
+
+// Very strict on critical actions
+const criticalLimiter = rateLimit({
+  windowMs: 60000,   // 1 minute
+  max: 5,             // 5 attempts/min
+  message: { error: 'RATE_LIMIT', message: 'Too many attempts, please wait' }
+});
+
+// In-memory idempotency cache (prevents double-click submissions)
+const idempCache = new Map();
+const IDEMP_TTL = 10000; // 10 seconds
+function idempKey(userId, action) { return `${userId}:${action}`; }
+function checkIdemp(userId, action) {
+  const key = idempKey(userId, action);
+  const now = Date.now();
+  // Clean expired
+  for (const [k, v] of idempCache.entries()) {
+    if (now - v > IDEMP_TTL) idempCache.delete(k);
+  }
+  if (idempCache.has(key)) return false; // duplicate
+  idempCache.set(key, now);
+  return true;
+}
+
+// XSS sanitizer
+function sanitize(str) {
+  if (typeof str !== 'string') return str;
+  return str
+    .replace(/[<>]/g, '')
+    .replace(/javascript:/gi, '')
+    .replace(/on\w+=/gi, '')
+    .slice(0, 500);
+}
+
+// Strict number validator
+function safeNum(val, min = 0, max = 1000000) {
+  const n = parseFloat(val);
+  if (isNaN(n) || !isFinite(n)) return null;
+  if (n < min || n > max) return null;
+  return n;
+}
 
 // ============ MINERS CONFIG ============
 const MINERS_CONFIG = [
@@ -132,8 +180,25 @@ const activeMinerSchema = new mongoose.Schema({
   expiresAt: Date,
   status: { type: String, default: 'active', enum: ['active', 'expired'] },
   totalCollected: { type: Number, default: 0 },
-  lastCollected: Date
+  lastCollected: Date,
+  fromDepositId: { type: String, default: null, sparse: true }  // Link to deposit (anti-dup)
 });
+// Partial unique index: prevents double-claim of FREE Kitty miner
+activeMinerSchema.index(
+  { telegramId: 1, minerId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { minerId: 'miner_0' }
+  }
+);
+// Unique sparse index on fromDepositId: prevents duplicate activation from same deposit
+activeMinerSchema.index(
+  { fromDepositId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { fromDepositId: { $type: 'string' } }
+  }
+);
 const ActiveMiner = mongoose.model('CatsMiningMiner', activeMinerSchema);
 
 const depositSchema = new mongoose.Schema({
@@ -193,6 +258,33 @@ const dailyClaimSchema = new mongoose.Schema({
   claimedAt: { type: Date, default: Date.now, index: true }
 });
 const DailyClaim = mongoose.model('CatsMiningDailyClaim', dailyClaimSchema);
+
+// Partner request applications
+const partnerRequestSchema = new mongoose.Schema({
+  telegramId: { type: String, index: true },
+  username: String,
+  firstName: String,
+  channelLink: String,
+  description: String,
+  status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending', index: true },
+  reviewedAt: Date,
+  reviewedBy: String,
+  rejectReason: String,
+  createdAt: { type: Date, default: Date.now }
+});
+const PartnerRequest = mongoose.model('CatsMiningPartnerRequest', partnerRequestSchema);
+
+// Discount events
+const discountEventSchema = new mongoose.Schema({
+  name: { type: String, default: 'Mining Boost Event' },
+  description: String,
+  discountPercent: { type: Number, default: 10 },
+  startsAt: { type: Date, default: Date.now },
+  endsAt: { type: Date, required: true },
+  enabled: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+});
+const DiscountEvent = mongoose.model('CatsMiningDiscountEvent', discountEventSchema);
 
 // ============ BOT ============
 const bot = new TelegramBot(process.env.BOT_TOKEN);
@@ -256,86 +348,107 @@ bot.onText(/\/start(?:[\s_](.+))?/, async (msg, match) => {
 });
 
 // ============ API: REGISTER ============
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', strictLimiter, async (req, res) => {
   try {
     const { telegramId, firstName, username, photoUrl, refBy } = req.body;
+    if (!telegramId) return res.status(400).json({ error: 'INVALID' });
     const tgId = telegramId.toString();
-    let user = await User.findOne({ telegramId: tgId });
+    const ipAddress = req.headers['x-forwarded-for']?.split(',')[0] || req.ip || '';
 
-    if (!user) {
-      user = new User({ telegramId: tgId, firstName, username, photoUrl });
-      const ipAddress = req.headers['x-forwarded-for']?.split(',')[0] || req.ip || '';
-      user.ipAddress = ipAddress;
+    // Sanitize inputs (XSS protection)
+    const safeFirstName = sanitize(firstName || '');
+    const safeUsername = sanitize(username || '');
+    const safePhotoUrl = (photoUrl && /^https?:\/\//.test(photoUrl)) ? photoUrl : '';
 
-      // ─── SECURE REFERRAL VALIDATION ───
-      if (refBy && refBy.toString() !== tgId) {
-        const refByStr = refBy.toString();
+    // ATOMIC UPSERT: insert if not exists, else just update name/username
+    const isNew = !(await User.findOne({ telegramId: tgId }).select('_id').lean());
 
-        // Check 1: Referrer must exist
-        const referrer = await User.findOne({ telegramId: refByStr });
-        if (!referrer) {
-          console.log(`[REFERRAL] ❌ REJECT: referrer ${refByStr} not found`);
-        } else if (referrer.banned) {
-          console.log(`[REFERRAL] ❌ REJECT: referrer ${refByStr} is banned`);
-        } else if (referrer.referrals.includes(tgId)) {
-          console.log(`[REFERRAL] ❌ REJECT: duplicate referral`);
+    let user;
+    if (isNew) {
+      // Try to create — handle race condition via duplicate key
+      try {
+        user = await User.create({
+          telegramId: tgId,
+          firstName: safeFirstName,
+          username: safeUsername,
+          photoUrl: safePhotoUrl,
+          ipAddress
+        });
+        console.log(`[USER] New: ${tgId} (${safeFirstName})`);
+      } catch(err) {
+        // E11000 = duplicate key (race condition) → another request already created
+        if (err.code === 11000) {
+          user = await User.findOne({ telegramId: tgId });
         } else {
-          // Check 2: IP/fingerprint fraud (same IP = suspicious)
-          let suspicious = false;
-          if (ipAddress && referrer.ipAddress === ipAddress) {
-            suspicious = true;
-            console.log(`[REFERRAL] ⚠️ Same IP detected: ${ipAddress}`);
-          }
-
-          // Set referral (locked permanently)
-          user.referredBy = refByStr;
-          user.referralLocked = true;
-
-          await User.findOneAndUpdate(
-            { telegramId: refByStr },
-            { $addToSet: { referrals: tgId } }
-          );
-
-          // Create audit log
-          await ReferralLog.create({
-            referrerId: refByStr,
-            referredId: tgId,
-            status: suspicious ? 'pending' : 'pending',
-            reason: suspicious ? 'same_ip_flagged' : 'awaiting_deposit'
-          }).catch(e => console.log('[REFERRAL] Log exists or error:', e.message));
-
-          console.log(`[REFERRAL] ✅ Linked: ${tgId} → invited by ${refByStr}${suspicious?' [FLAGGED]':''}`);
+          throw err;
         }
       }
-      await user.save();
-      console.log(`[USER] New: ${tgId} (${firstName})`);
     } else {
-      // ─── EXISTING USER ───
-      // Referral is locked once set — no auto-fix for security
-      // Only allow if referredBy is null AND referralLocked is false (first time grab)
-      if (refBy && refBy.toString() !== tgId && !user.referredBy && !user.referralLocked) {
-        const refByStr = refBy.toString();
-        const referrer = await User.findOne({ telegramId: refByStr });
-        if (referrer && !referrer.banned && !referrer.referrals.includes(tgId)) {
-          user.referredBy = refByStr;
-          user.referralLocked = true;
+      // Update existing user info atomically
+      user = await User.findOneAndUpdate(
+        { telegramId: tgId },
+        {
+          $set: {
+            ...(safeFirstName && { firstName: safeFirstName }),
+            ...(safeUsername && { username: safeUsername }),
+            ...(safePhotoUrl && { photoUrl: safePhotoUrl })
+          }
+        },
+        { new: true }
+      );
+    }
+
+    if (!user) return res.status(500).json({ error: 'FAILED_TO_CREATE' });
+
+    // ─── SECURE REFERRAL VALIDATION ───
+    // Only set if not already locked and not self-referral
+    if (refBy && refBy.toString() !== tgId && !user.referralLocked && !user.referredBy) {
+      const refByStr = refBy.toString();
+      const referrer = await User.findOne({ telegramId: refByStr });
+
+      if (!referrer) {
+        console.log(`[REFERRAL] ❌ REJECT: referrer ${refByStr} not found`);
+      } else if (referrer.banned) {
+        console.log(`[REFERRAL] ❌ REJECT: referrer ${refByStr} is banned`);
+      } else if (referrer.referrals.includes(tgId)) {
+        console.log(`[REFERRAL] ❌ REJECT: duplicate referral`);
+      } else {
+        // IP fraud detection (same IP = suspicious)
+        let suspicious = false;
+        if (ipAddress && referrer.ipAddress === ipAddress) {
+          suspicious = true;
+          console.log(`[REFERRAL] ⚠️ Same IP detected: ${ipAddress}`);
+        }
+
+        // ATOMIC: Lock referral (only if still not locked) — prevents race
+        const locked = await User.findOneAndUpdate(
+          { telegramId: tgId, referralLocked: { $ne: true }, referredBy: null },
+          { $set: { referredBy: refByStr, referralLocked: true } },
+          { new: true }
+        );
+
+        if (locked) {
+          // Atomic add to referrer's referrals array (no duplicates due to $addToSet)
           await User.findOneAndUpdate(
             { telegramId: refByStr },
             { $addToSet: { referrals: tgId } }
           );
+
+          // Create audit log (unique index prevents duplicates)
           await ReferralLog.create({
             referrerId: refByStr,
             referredId: tgId,
             status: 'pending',
-            reason: 'late_credit'
-          }).catch(()=>{});
-          console.log(`[REFERRAL] ✅ Late credit: ${tgId} → ${refByStr}`);
+            reason: suspicious ? 'same_ip_flagged' : 'awaiting_validation'
+          }).catch(e => {
+            // Duplicate log = referral was already created (race condition)
+            if (e.code !== 11000) console.log('[REFERRAL] Log error:', e.message);
+          });
+
+          user = locked;  // Use updated user with referredBy
+          console.log(`[REFERRAL] ✅ Linked: ${tgId} → invited by ${refByStr}${suspicious?' [FLAGGED]':''}`);
         }
       }
-      if (firstName) user.firstName = firstName;
-      if (username) user.username = username;
-      if (photoUrl) user.photoUrl = photoUrl;
-      await user.save();
     }
 
     const activeMiners = await ActiveMiner.find({ telegramId: tgId, status: 'active' });
@@ -366,7 +479,7 @@ app.get('/api/user/:telegramId', async (req, res) => {
 });
 
 // ============ API: BUY MINER ============
-app.post('/api/miners/buy', async (req, res) => {
+app.post('/api/miners/buy', strictLimiter, async (req, res) => {
   try {
     const { telegramId, minerId } = req.body;
     const user = await User.findOne({ telegramId: telegramId.toString() });
@@ -376,50 +489,69 @@ app.post('/api/miners/buy', async (req, res) => {
     const minerConfig = MINERS_CONFIG.find(m => m.id === minerId);
     if (!minerConfig) return res.status(400).json({ error: 'Invalid miner' });
 
-    // Free miner (Kitty)
+    // Free miner (Kitty) — ATOMIC with idempotency
     if (minerConfig.price === 0) {
-      const existing = await ActiveMiner.findOne({ telegramId: telegramId.toString(), minerId: 'miner_0' });
-      if (existing) return res.status(400).json({ error: 'Already claimed free miner' });
+      const tgId = telegramId.toString();
 
+      // Idempotency check
+      if (!checkIdemp(tgId, 'free-miner:' + minerId)) {
+        return res.status(429).json({ error: 'DUPLICATE_REQUEST', message: 'Please wait' });
+      }
+
+      // Atomic check: createIndex (telegramId + minerId) prevents duplicates
       const now = new Date();
       const startsEarning = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-      const miner = new ActiveMiner({
-        telegramId: telegramId.toString(),
-        minerId: minerConfig.id,
-        minerName: minerConfig.name,
-        level: minerConfig.level,
-        price: 0,
-        daily: minerConfig.daily,
-        totalReturn: minerConfig.total,
-        startsEarningAt: startsEarning,
-        expiresAt: new Date(startsEarning.getTime() + minerConfig.days * 24 * 60 * 60 * 1000)
-      });
-      await miner.save();
-      return res.json({ success: true, miner, type: 'free' });
+      try {
+        const miner = await ActiveMiner.create({
+          telegramId: tgId,
+          minerId: minerConfig.id,
+          minerName: minerConfig.name,
+          level: minerConfig.level,
+          price: 0,
+          daily: minerConfig.daily,
+          totalReturn: minerConfig.total,
+          startsEarningAt: startsEarning,
+          expiresAt: new Date(startsEarning.getTime() + minerConfig.days * 24 * 60 * 60 * 1000)
+        });
+        console.log(`[MINER] ${tgId} claimed free Kitty`);
+        return res.json({ success: true, miner, type: 'free' });
+      } catch (err) {
+        // Check after error: was it a duplicate?
+        const existing = await ActiveMiner.findOne({ telegramId: tgId, minerId: 'miner_0' });
+        if (existing) {
+          return res.status(400).json({ error: 'ALREADY_CLAIMED', message: 'Free miner already claimed' });
+        }
+        throw err;
+      }
     }
 
-    // Paid miner — create pending deposit
+    // Paid miner — apply discount if active event
     const tgId = telegramId.toString();
+    const discount = await getActiveDiscount();
+    const finalPrice = applyDiscount(minerConfig.price, discount);
+
     const depositId = Math.random().toString(36).substring(2, 8).toUpperCase();
     const memo = `CM${tgId}_${depositId}`;
 
     const deposit = new Deposit({
       telegramId: tgId,
-      amount: minerConfig.price,
-      uniqueAmount: minerConfig.price,
+      amount: finalPrice,
+      uniqueAmount: finalPrice,
       minerId: minerConfig.id,
       memo: memo
     });
     await deposit.save();
 
-    console.log(`[PAYMENT] Created deposit: user=${tgId} miner=${minerConfig.id} amount=${minerConfig.price} memo=${memo}`);
+    console.log(`[PAYMENT] Created deposit: user=${tgId} miner=${minerConfig.id} amount=${finalPrice} (orig=${minerConfig.price}, discount=${discount}%) memo=${memo}`);
 
     res.json({
       success: true,
       type: 'deposit_required',
       walletAddress: process.env.BOT_WALLET,
-      amount: minerConfig.price,
-      uniqueAmount: minerConfig.price,
+      amount: finalPrice,
+      originalPrice: minerConfig.price,
+      discount,
+      uniqueAmount: finalPrice,
       memo: memo,
       depositId: deposit._id.toString()
     });
@@ -430,51 +562,75 @@ app.post('/api/miners/buy', async (req, res) => {
 });
 
 // ============ API: BUY MINER WITH BOT BALANCE ============
-app.post('/api/miners/buy-balance', async (req, res) => {
+app.post('/api/miners/buy-balance', criticalLimiter, async (req, res) => {
   try {
     const { telegramId, minerId } = req.body;
+    if (!telegramId || !minerId) return res.status(400).json({ error: 'INVALID' });
     const tgId = telegramId.toString();
+
+    // Idempotency
+    if (!checkIdemp(tgId, 'buy-balance:' + minerId)) {
+      return res.status(429).json({ error: 'DUPLICATE_REQUEST' });
+    }
+
     const minerConfig = MINERS_CONFIG.find(m => m.id === minerId);
     if (!minerConfig) return res.status(404).json({ error: 'MINER_NOT_FOUND' });
     if (minerConfig.price === 0) return res.status(400).json({ error: 'FREE_MINER_USE_BUY' });
 
+    // Apply event discount
+    const discount = await getActiveDiscount();
+    const finalPrice = applyDiscount(minerConfig.price, discount);
+
     // Atomic: deduct balance only if sufficient
     const updated = await User.findOneAndUpdate(
-      { telegramId: tgId, balance: { $gte: minerConfig.price }, banned: false },
-      { $inc: { balance: -minerConfig.price, totalInvested: minerConfig.price } },
+      { telegramId: tgId, balance: { $gte: finalPrice }, banned: false },
+      { $inc: { balance: -finalPrice, totalInvested: finalPrice } },
       { new: true }
     );
     if (!updated) return res.status(400).json({ error: 'INSUFFICIENT_BALANCE' });
 
-    // Activate miner with 24h delay
-    const activateAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    const miner = new ActiveMiner({
-      telegramId: tgId,
-      minerId: minerConfig.id,
-      minerName: minerConfig.name,
-      level: minerConfig.level,
-      price: minerConfig.price,
-      daily: minerConfig.daily,
-      totalReturn: minerConfig.total,
-      startsEarningAt: activateAt,
-      expiresAt: new Date(activateAt.getTime() + minerConfig.days * 24 * 60 * 60 * 1000)
-    });
-    await miner.save();
-
-    console.log(`[MINER] ${tgId} bought ${minerConfig.name} with balance (${minerConfig.price} TON)`);
-
-    // Record as verified deposit (counts for withdrawal eligibility)
+    // Record as verified deposit FIRST (counts for withdrawal eligibility + miner link)
     const memo = 'CM' + tgId + '_BAL_' + Date.now();
-    const deposit = new Deposit({
+    const deposit = await Deposit.create({
       telegramId: tgId,
       minerId: minerConfig.id,
-      amount: minerConfig.price,
+      amount: finalPrice,
       memo,
       status: 'verified',
-      txHash: 'BALANCE_' + Date.now(),
+      txHash: 'BALANCE_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
       verifiedAt: new Date()
     });
-    await deposit.save();
+
+    // Activate miner with 24h delay (LINK to deposit to prevent duplicates)
+    const activateAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    let miner;
+    try {
+      miner = await ActiveMiner.create({
+        telegramId: tgId,
+        minerId: minerConfig.id,
+        minerName: minerConfig.name,
+        level: minerConfig.level,
+        price: finalPrice,
+        daily: minerConfig.daily,
+        totalReturn: minerConfig.total,
+        startsEarningAt: activateAt,
+        expiresAt: new Date(activateAt.getTime() + minerConfig.days * 24 * 60 * 60 * 1000),
+        fromDepositId: deposit._id.toString()
+      });
+    } catch(err) {
+      if (err.code === 11000) {
+        // Duplicate fromDepositId — race condition, refund
+        await User.findOneAndUpdate(
+          { telegramId: tgId },
+          { $inc: { balance: finalPrice, totalInvested: -finalPrice } }
+        );
+        await Deposit.deleteOne({ _id: deposit._id });
+        return res.status(429).json({ error: 'DUPLICATE_REQUEST', message: 'Already processing' });
+      }
+      throw err;
+    }
+
+    console.log(`[MINER] ${tgId} bought ${minerConfig.name} with balance (${finalPrice} TON, discount=${discount}%)`);
 
     // Referral commission — only if not paid yet (prevent duplicate)
     if (updated.referredBy) {
@@ -508,22 +664,29 @@ app.post('/api/miners/buy-balance', async (req, res) => {
 });
 
 // ============ API: COLLECT EARNINGS ============
-app.post('/api/miners/collect', async (req, res) => {
+app.post('/api/miners/collect', strictLimiter, async (req, res) => {
   try {
     const { telegramId } = req.body;
-    const user = await User.findOne({ telegramId: telegramId.toString() });
+    if (!telegramId) return res.status(400).json({ error: 'INVALID' });
+    const tgId = telegramId.toString();
+
+    // Idempotency: block rapid double-clicks (within 10 sec)
+    if (!checkIdemp(tgId, 'collect')) {
+      return res.status(429).json({ error: 'DUPLICATE_REQUEST', message: 'Please wait before collecting again' });
+    }
+
+    const user = await User.findOne({ telegramId: tgId });
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (user.banned) return res.status(403).json({ error: 'ACCOUNT_BANNED' });
 
-    const miners = await ActiveMiner.find({ telegramId: telegramId.toString(), status: 'active' });
+    const miners = await ActiveMiner.find({ telegramId: tgId, status: 'active' });
     let totalCollect = 0;
     const now = new Date();
 
     for (const miner of miners) {
       // Check if expired
       if (now >= miner.expiresAt) {
-        miner.status = 'expired';
-        await miner.save();
+        await ActiveMiner.findByIdAndUpdate(miner._id, { status: 'expired' });
         continue;
       }
 
@@ -534,29 +697,58 @@ app.post('/api/miners/collect', async (req, res) => {
 
       // Calculate earnings since last collect (or since startsEarningAt)
       const earnStart = miner.startsEarningAt || miner.startedAt;
-      const lastCollect = miner.lastCollected || earnStart;
-      const effectiveStart = lastCollect < earnStart ? earnStart : lastCollect;
+      const prevLastCollect = miner.lastCollected || earnStart;
+      const effectiveStart = prevLastCollect < earnStart ? earnStart : prevLastCollect;
       const hoursSince = (now - effectiveStart) / (1000 * 60 * 60);
       const earned = (miner.daily / 24) * hoursSince;
 
-      if (earned > 0.0001) {
+      if (earned <= 0.0001) continue;
+
+      // ──── BULLETPROOF ATOMIC UPDATE ────
+      // Use exact match on lastCollected (even if null) → only ONE request can succeed
+      // Even with multiple concurrent calls, MongoDB ensures only ONE update goes through
+      const filter = {
+        _id: miner._id,
+        status: 'active'
+      };
+      // Match the exact lastCollected value we read (or null if first-ever collect)
+      if (miner.lastCollected) {
+        filter.lastCollected = miner.lastCollected;
+      } else {
+        filter.lastCollected = { $in: [null, undefined] };
+      }
+
+      const updateResult = await ActiveMiner.findOneAndUpdate(
+        filter,
+        {
+          $set: { lastCollected: now },
+          $inc: { totalCollected: earned }
+        },
+        { new: true }
+      );
+
+      // updateResult is null = another concurrent request already collected this miner
+      // We silently skip (no double-pay)
+      if (updateResult) {
         totalCollect += earned;
-        miner.totalCollected += earned;
-        miner.lastCollected = now;
-        await miner.save();
+      } else {
+        console.log(`[COLLECT] ⚠️ Race detected for miner ${miner._id}, skipping`);
       }
     }
 
+    // Atomic balance update only for what actually collected
     if (totalCollect > 0) {
       await User.findOneAndUpdate(
-        { telegramId: telegramId.toString() },
+        { telegramId: tgId },
         { $inc: { balance: totalCollect, totalEarned: totalCollect } }
       );
+      console.log(`[COLLECT] ✅ ${tgId} collected ${totalCollect.toFixed(6)} TON`);
     }
 
-    const updatedUser = await User.findOne({ telegramId: telegramId.toString() });
+    const updatedUser = await User.findOne({ telegramId: tgId });
     res.json({ success: true, collected: totalCollect, newBalance: updatedUser.balance });
   } catch (error) {
+    console.error('[COLLECT] Error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -595,15 +787,22 @@ app.get('/api/miners/pending/:telegramId', async (req, res) => {
 });
 
 // ============ API: WITHDRAWALS ============
-app.post('/api/withdrawals/request', async (req, res) => {
+app.post('/api/withdrawals/request', criticalLimiter, async (req, res) => {
   try {
     const { telegramId, amount, walletAddress } = req.body;
+    if (!telegramId) return res.status(400).json({ error: 'INVALID' });
     const tgId = telegramId.toString();
-    const amt = parseFloat(amount);
+    const amt = safeNum(amount, 0.01, 1000);
 
-    // Validate inputs
-    if (!tgId || !amt || amt <= 0) return res.status(400).json({ error: 'INVALID_INPUT' });
-    if (!walletAddress || walletAddress.length < 20) return res.status(400).json({ error: 'INVALID_WALLET' });
+    // Strict validation
+    if (!amt) return res.status(400).json({ error: 'INVALID_AMOUNT' });
+    const wallet = sanitize(walletAddress);
+    if (!wallet || wallet.length < 20 || wallet.length > 100) return res.status(400).json({ error: 'INVALID_WALLET' });
+
+    // Idempotency: prevent rapid double-submit
+    if (!checkIdemp(tgId, 'withdraw')) {
+      return res.status(429).json({ error: 'DUPLICATE_REQUEST', message: 'Please wait before submitting again' });
+    }
 
     const user = await User.findOne({ telegramId: tgId });
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -630,18 +829,18 @@ app.post('/api/withdrawals/request', async (req, res) => {
 
     // Create withdrawal record
     const withdrawal = new Withdrawal({
-      telegramId: tgId, amount: amt, fee, netAmount, walletAddress, status: 'pending'
+      telegramId: tgId, amount: amt, fee, netAmount, walletAddress: wallet, status: 'pending'
     });
     await withdrawal.save();
 
-    console.log(`[WITHDRAW] User ${tgId} requested ${amt} TON to ${walletAddress.slice(0,10)}...`);
+    console.log(`[WITHDRAW] User ${tgId} requested ${amt} TON to ${wallet.slice(0,10)}...`);
 
     // Notify admin
     const adminId = process.env.ADMIN_IDS;
     if (adminId) {
       try {
         await bot.sendMessage(adminId,
-          `💸 *Withdrawal Request*\n👤 ${user.firstName} (@${user.username||'?'})\n🆔 \`${tgId}\`\n💰 ${amt} TON\n📤 Net: ${netAmount.toFixed(4)} TON\n📬 \`${walletAddress}\``,
+          `💸 *Withdrawal Request*\n👤 ${user.firstName} (@${user.username||'?'})\n🆔 \`${tgId}\`\n💰 ${amt} TON\n📤 Net: ${netAmount.toFixed(4)} TON\n📬 \`${wallet}\``,
           { parse_mode: 'Markdown' }
         );
       } catch (e) {}
@@ -654,6 +853,102 @@ app.post('/api/withdrawals/request', async (req, res) => {
   }
 });
 
+// ============ API: PARTNER REQUESTS ============
+app.post('/api/partner/apply', criticalLimiter, async (req, res) => {
+  try {
+    const { telegramId, channelLink, description } = req.body;
+    if (!telegramId || !channelLink) return res.status(400).json({ error: 'INVALID' });
+    const tgId = telegramId.toString();
+
+    // Idempotency
+    if (!checkIdemp(tgId, 'partner-apply')) {
+      return res.status(429).json({ error: 'DUPLICATE_REQUEST' });
+    }
+
+    // Sanitize
+    const link = sanitize(channelLink);
+    const desc = sanitize(description || '');
+
+    if (!link.match(/^https?:\/\/(t\.me|telegram\.me)\/[a-zA-Z0-9_+]+$/)) {
+      return res.status(400).json({ error: 'INVALID_LINK', message: 'Please provide a valid t.me link' });
+    }
+
+    const user = await User.findOne({ telegramId: tgId });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.banned) return res.status(403).json({ error: 'ACCOUNT_BANNED' });
+
+    // Check if already has pending or recent rejected request (limit 1 per week)
+    const existing = await PartnerRequest.findOne({
+      telegramId: tgId,
+      $or: [
+        { status: 'pending' },
+        { status: 'rejected', createdAt: { $gte: new Date(Date.now() - 7*24*60*60*1000) } }
+      ]
+    });
+    if (existing) {
+      const msg = existing.status === 'pending' ? 'You already have a pending request' : 'You can re-apply 7 days after rejection';
+      return res.status(400).json({ error: 'EXISTS', message: msg });
+    }
+
+    // Check duplicate channel
+    const dupChannel = await PartnerRequest.findOne({ channelLink: link, status: { $in: ['pending', 'approved'] } });
+    if (dupChannel) return res.status(400).json({ error: 'CHANNEL_TAKEN', message: 'This channel was already submitted' });
+
+    const request = new PartnerRequest({
+      telegramId: tgId,
+      username: user.username,
+      firstName: user.firstName,
+      channelLink: link,
+      description: desc,
+      status: 'pending'
+    });
+    await request.save();
+
+    // Notify admin
+    const adminId = process.env.ADMIN_IDS;
+    if (adminId) {
+      try {
+        await bot.sendMessage(adminId,
+          `🤝 *New Partner Request*\n👤 ${user.firstName} (@${user.username||'?'})\n🆔 \`${tgId}\`\n📢 ${link}`,
+          { parse_mode: 'Markdown' }
+        );
+      } catch(e) {}
+    }
+
+    console.log(`[PARTNER] ${tgId} applied for partnership with ${link}`);
+    res.json({ success: true, message: 'Partnership request submitted!' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get user's partner request status
+app.get('/api/partner/status/:telegramId', async (req, res) => {
+  try {
+    const tgId = req.params.telegramId.toString();
+    const request = await PartnerRequest.findOne({ telegramId: tgId }).sort({ createdAt: -1 });
+    res.json({ success: true, request });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ API: DISCOUNT EVENTS ============
+app.get('/api/event/current', async (req, res) => {
+  try {
+    const now = new Date();
+    const event = await DiscountEvent.findOne({
+      enabled: true,
+      startsAt: { $lte: now },
+      endsAt: { $gt: now }
+    }).sort({ createdAt: -1 });
+    res.json({ success: true, event });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Helper: get active discount % (0 if none)
 // ============ API: TASKS ============
 app.get('/api/tasks', async (req, res) => {
   try {
@@ -694,36 +989,71 @@ app.get('/api/tasks', async (req, res) => {
 });
 
 // Save user wallet address (from TON Connect)
-app.post('/api/user/wallet', async (req, res) => {
+app.post('/api/user/wallet', strictLimiter, async (req, res) => {
   try {
     const { telegramId, walletAddress } = req.body;
     if (!telegramId || !walletAddress) return res.status(400).json({ error: 'INVALID' });
     const tgId = telegramId.toString();
 
-    // Check if wallet already used by another account (anti-fraud)
-    const existing = await User.findOne({ walletAddress, telegramId: { $ne: tgId } });
+    // Sanitize + validate wallet format
+    const wallet = String(walletAddress).trim();
+    if (wallet.length > 80 || wallet.length < 40) {
+      return res.status(400).json({ error: 'INVALID_FORMAT', message: 'Invalid wallet address' });
+    }
+    // Strip any unsafe chars
+    const safeWallet = wallet.replace(/[<>"';\s]/g, '');
+    // TON wallet must be alphanumeric + : - _ only
+    if (!/^[a-zA-Z0-9:_-]+$/.test(safeWallet)) {
+      return res.status(400).json({ error: 'INVALID_FORMAT' });
+    }
+
+    // ATOMIC check + update with conditional filter
+    // Only update if wallet is NOT used by another user
+    const existing = await User.findOne({ walletAddress: safeWallet, telegramId: { $ne: tgId } });
     if (existing) {
-      console.log(`[SECURITY] ⚠️ Wallet ${walletAddress.slice(0,12)} already used by ${existing.telegramId}, blocked for ${tgId}`);
+      console.log(`[SECURITY] ⚠️ Wallet ${safeWallet.slice(0,12)} already used by ${existing.telegramId}, blocked for ${tgId}`);
       return res.status(400).json({ error: 'WALLET_ALREADY_USED', message: 'This wallet is linked to another account' });
     }
 
-    await User.findOneAndUpdate({ telegramId: tgId }, { walletAddress });
-    console.log(`[WALLET] ${tgId} connected wallet ${walletAddress.slice(0,12)}...`);
+    // Update with race protection: only set if no one else grabbed it in the meantime
+    const updated = await User.findOneAndUpdate(
+      { telegramId: tgId },
+      { walletAddress: safeWallet },
+      { new: true }
+    );
+
+    // Double-check: was the wallet stolen by another user between check and update?
+    const dupCheck = await User.countDocuments({ walletAddress: safeWallet });
+    if (dupCheck > 1) {
+      // Rollback our wallet — another user got there first
+      await User.findOneAndUpdate({ telegramId: tgId }, { walletAddress: null });
+      return res.status(400).json({ error: 'WALLET_ALREADY_USED', message: 'Race condition - wallet taken' });
+    }
+
+    console.log(`[WALLET] ${tgId} connected wallet ${safeWallet.slice(0,12)}...`);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/tasks/complete', async (req, res) => {
+app.post('/api/tasks/complete', strictLimiter, async (req, res) => {
   try {
     const { telegramId, taskId } = req.body;
+    if (!telegramId || !taskId) return res.status(400).json({ error: 'INVALID' });
     const tgId = telegramId.toString();
+    const safeTaskId = sanitize(taskId);
+
+    // Idempotency: prevent rapid double-click
+    if (!checkIdemp(tgId, 'task:' + safeTaskId)) {
+      return res.status(429).json({ error: 'DUPLICATE_REQUEST' });
+    }
+
     const user = await User.findOne({ telegramId: tgId });
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (user.banned) return res.status(403).json({ error: 'ACCOUNT_BANNED' });
 
-    const task = await Task.findOne({ taskId, enabled: true });
+    const task = await Task.findOne({ taskId: safeTaskId, enabled: true });
     if (!task) return res.status(404).json({ error: 'TASK_NOT_FOUND' });
 
     // ─── DAILY TASK CHECK (repeatable) ───
@@ -731,7 +1061,7 @@ app.post('/api/tasks/complete', async (req, res) => {
       // Check if claimed in last 24h
       const last = await DailyClaim.findOne({
         telegramId: tgId,
-        taskId,
+        safeTaskId,
         claimedAt: { $gte: new Date(Date.now() - 24*60*60*1000) }
       });
       if (last) {
@@ -744,7 +1074,7 @@ app.post('/api/tasks/complete', async (req, res) => {
       }
     } else {
       // Non-daily: check completedTasks
-      if (user.completedTasks.includes(taskId)) {
+      if (user.completedTasks.includes(safeTaskId)) {
         return res.status(400).json({ error: 'ALREADY_COMPLETED' });
       }
     }
@@ -770,7 +1100,7 @@ app.post('/api/tasks/complete', async (req, res) => {
     }
 
     // Task: Buy First Miner — verify user owns at least 1 PAID miner (not free Kitty)
-    if (taskId === 't_miner' || (task.requireMiner && !task.requireDepositToday)) {
+    if (safeTaskId === 't_miner' || (task.requireMiner && !task.requireDepositToday)) {
       // Must have a verified PAID deposit, OR an active miner with price > 0
       const hasVerifiedDeposit = await Deposit.findOne({
         telegramId: tgId,
@@ -782,14 +1112,14 @@ app.post('/api/tasks/complete', async (req, res) => {
         price: { $gt: 0 }
       });
       if (!hasVerifiedDeposit && !hasPaidMiner) {
-        console.log(`[TASK] ❌ ${tgId} no PAID miner for ${taskId}`);
+        console.log(`[TASK] ❌ ${tgId} no PAID miner for ${safeTaskId}`);
         return res.status(400).json({ error: 'NO_MINER', message: 'You must buy a paid miner first (Kitty does not count)' });
       }
       console.log(`[TASK] ✅ ${tgId} has paid miner verification`);
     }
 
     // Task: Deposit — verify at least one verified deposit
-    if (taskId.includes('deposit') || (task.requireDeposit)) {
+    if (safeTaskId.includes('deposit') || (task.requireDeposit)) {
       const hasDeposit = await Deposit.findOne({ telegramId: tgId, status: 'verified' });
       if (!hasDeposit) {
         return res.status(400).json({ error: 'NO_DEPOSIT', message: 'You must make a deposit first' });
@@ -797,7 +1127,7 @@ app.post('/api/tasks/complete', async (req, res) => {
     }
 
     // Task: Referral — verify actual paid referrals
-    if (taskId.includes('invite') || taskId.includes('ref') || (task.requireReferrals)) {
+    if (safeTaskId.includes('invite') || safeTaskId.includes('ref') || (task.requireReferrals)) {
       const required = task.requireReferrals || 1;
       let paidRefs = 0;
       for (const refId of user.referrals) {
@@ -810,7 +1140,7 @@ app.post('/api/tasks/complete', async (req, res) => {
     }
 
     // Task: Wallet — verify user has connected wallet
-    if (task.requireWallet || taskId === 't_wallet') {
+    if (task.requireWallet || safeTaskId === 't_wallet') {
       if (!user.walletAddress) {
         return res.status(400).json({ error: 'NO_WALLET', message: 'Please connect your TON wallet first' });
       }
@@ -867,7 +1197,7 @@ app.post('/api/tasks/complete', async (req, res) => {
 
     if (task.isDaily) {
       // Daily task: record claim, no completedTasks push (can repeat)
-      await DailyClaim.create({ telegramId: tgId, taskId });
+      await DailyClaim.create({ telegramId: tgId, taskId: safeTaskId });
       const updated = await User.findOneAndUpdate(
         { telegramId: tgId },
         { $inc: { balance: finalReward, totalEarned: finalReward } },
@@ -877,7 +1207,7 @@ app.post('/api/tasks/complete', async (req, res) => {
 
       // ─── REFERRAL ACTIVATION ───
       // If user has a referrer AND this is daily reward + first claim → validate referral
-      if (updated && updated.referredBy && taskId === 't_daily_reward') {
+      if (updated && updated.referredBy && safeTaskId === 't_daily_reward') {
         const refLog = await ReferralLog.findOne({
           referrerId: updated.referredBy,
           referredId: tgId,
@@ -906,15 +1236,15 @@ app.post('/api/tasks/complete', async (req, res) => {
       return res.json({ success: true, reward: finalReward, newBalance: updated.balance, daily: true });
     }
 
-    // One-time task
+    // One-time task — ATOMIC + idempotent (cannot be claimed twice even if click rapid)
     const updated = await User.findOneAndUpdate(
-      { telegramId: tgId, completedTasks: { $ne: taskId } },
-      { $push: { completedTasks: taskId }, $inc: { balance: finalReward, totalEarned: finalReward } },
+      { telegramId: tgId, completedTasks: { $ne: safeTaskId } },
+      { $push: { completedTasks: safeTaskId }, $inc: { balance: finalReward, totalEarned: finalReward } },
       { new: true }
     );
     if (!updated) return res.status(400).json({ error: 'ALREADY_COMPLETED' });
 
-    console.log(`[TASK] ✅ ${tgId} completed ${taskId} +${finalReward} TON`);
+    console.log(`[TASK] ✅ ${tgId} completed ${safeTaskId} +${finalReward} TON`);
     res.json({ success: true, reward: finalReward, newBalance: updated.balance });
   } catch (error) {
     console.error('[TASK] Error:', error.message);
@@ -923,27 +1253,58 @@ app.post('/api/tasks/complete', async (req, res) => {
 });
 
 // ============ API: DAILY REWARD ============
-app.post('/api/daily-claim', async (req, res) => {
+app.post('/api/daily-claim', strictLimiter, async (req, res) => {
   try {
     const { telegramId } = req.body;
-    const user = await User.findOne({ telegramId: telegramId.toString() });
+    if (!telegramId) return res.status(400).json({ error: 'INVALID' });
+    const tgId = telegramId.toString();
+
+    // Idempotency
+    if (!checkIdemp(tgId, 'daily-claim')) {
+      return res.status(429).json({ error: 'DUPLICATE_REQUEST', message: 'Please wait' });
+    }
+
+    const user = await User.findOne({ telegramId: tgId });
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (user.banned) return res.status(403).json({ error: 'ACCOUNT_BANNED' });
 
     const now = new Date();
-    if (user.lastDaily && (now - user.lastDaily) < 24 * 60 * 60 * 1000) {
+    const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+    // Check cooldown BEFORE atomic update
+    if (user.lastDaily && user.lastDaily > dayAgo) {
       const next = new Date(user.lastDaily.getTime() + 24 * 60 * 60 * 1000);
       return res.status(400).json({ error: 'TOO_EARLY', nextClaim: next });
     }
 
-    const reward = 0.005 + Math.random() * 0.01;
-    user.balance += reward;
-    user.totalEarned += reward;
-    user.lastDaily = now;
-    await user.save();
+    const reward = +(0.005 + Math.random() * 0.01).toFixed(4);
 
-    res.json({ success: true, reward, newBalance: user.balance });
+    // ATOMIC: only update if lastDaily is still the same (or null) → prevents race
+    const updateFilter = { telegramId: tgId };
+    if (user.lastDaily) {
+      updateFilter.lastDaily = user.lastDaily;
+    } else {
+      updateFilter.lastDaily = { $in: [null, undefined] };
+    }
+
+    const updated = await User.findOneAndUpdate(
+      updateFilter,
+      {
+        $set: { lastDaily: now },
+        $inc: { balance: reward, totalEarned: reward }
+      },
+      { new: true }
+    );
+
+    if (!updated) {
+      // Another request beat us → already claimed
+      return res.status(400).json({ error: 'ALREADY_CLAIMED', message: 'Daily already claimed' });
+    }
+
+    console.log(`[DAILY] ✅ ${tgId} claimed ${reward} TON`);
+    res.json({ success: true, reward, newBalance: updated.balance });
   } catch (error) {
+    console.error('[DAILY]', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -974,6 +1335,23 @@ app.get('/api/referrals/:telegramId', async (req, res) => {
 });
 
 // ============ DEPOSIT VERIFICATION (CRON) ============
+// Get current discount % (0 if no event)
+async function getActiveDiscount() {
+  const now = new Date();
+  const event = await DiscountEvent.findOne({
+    enabled: true,
+    startsAt: { $lte: now },
+    endsAt: { $gt: now }
+  });
+  return event ? event.discountPercent : 0;
+}
+
+// Apply discount to price
+function applyDiscount(price, discountPercent) {
+  if (!discountPercent || discountPercent <= 0) return price;
+  return +(price * (1 - discountPercent / 100)).toFixed(6);
+}
+
 // ============ MILESTONE REWARDS ============
 async function checkMilestones(telegramId) {
   try {
@@ -1184,13 +1562,44 @@ async function verifyDeposits() {
         continue;
       }
 
-      // ─── VERIFY THE DEPOSIT ───
+      // ─── VERIFY THE DEPOSIT (ATOMIC LOCK) ───
       try {
+        // ATOMIC: only verify if still pending (locks the deposit)
+        // If another process already verified, this returns null → skip
+        const locked = await Deposit.findOneAndUpdate(
+          { _id: matchedDep._id, status: 'pending' },
+          {
+            $set: {
+              status: 'verified',
+              txHash,
+              matchMethod,
+              verifiedAt: new Date()
+            }
+          },
+          { new: true }
+        );
+
+        if (!locked) {
+          console.log(`[VERIFY] ⚠️ Deposit ${matchedDep._id} already verified by another process, skipping`);
+          continue;
+        }
+
+        // Also check if this txHash was already used (extra safety)
+        const txDupCheck = await Deposit.countDocuments({ txHash, status: 'verified' });
+        if (txDupCheck > 1) {
+          // This txHash is already linked to another verified deposit → rollback
+          await Deposit.findOneAndUpdate(
+            { _id: locked._id },
+            { $set: { status: 'pending', txHash: null, verifiedAt: null } }
+          );
+          console.log(`[VERIFY] ⚠️ txHash ${txHash} already used elsewhere, rolled back`);
+          continue;
+        }
+
         matchedDep.status = 'verified';
         matchedDep.txHash = txHash;
         matchedDep.matchMethod = matchMethod;
         matchedDep.verifiedAt = new Date();
-        await matchedDep.save();
 
         console.log(`[VERIFY] ✅ Deposit verified: user=${matchedDep.telegramId} method=${matchMethod}`);
 
@@ -1198,6 +1607,17 @@ async function verifyDeposits() {
         const minerConfig = MINERS_CONFIG.find(m => m.id === matchedDep.minerId);
         if (!minerConfig) {
           console.log(`[MINER] ❌ Miner config not found: ${matchedDep.minerId}`);
+          continue;
+        }
+
+        // ATOMIC: ensure no duplicate miner from same deposit
+        // Use deposit _id as link to prevent duplicate activation
+        const existingMinerFromDeposit = await ActiveMiner.findOne({
+          telegramId: matchedDep.telegramId,
+          fromDepositId: matchedDep._id.toString()
+        });
+        if (existingMinerFromDeposit) {
+          console.log(`[MINER] ⚠️ Already activated from deposit ${matchedDep._id}, skipping`);
           continue;
         }
 
@@ -1211,7 +1631,8 @@ async function verifyDeposits() {
           daily: minerConfig.daily,
           totalReturn: minerConfig.total,
           startsEarningAt: activateAt,
-          expiresAt: new Date(activateAt.getTime() + minerConfig.days * 24 * 60 * 60 * 1000)
+          expiresAt: new Date(activateAt.getTime() + minerConfig.days * 24 * 60 * 60 * 1000),
+          fromDepositId: matchedDep._id.toString()  // Link miner to deposit
         });
         await miner.save();
 
@@ -1881,6 +2302,230 @@ app.get('/api/admin/security', adminAuth, async (req, res) => {
 // Milestone settings (read/write)
 app.get('/api/admin/milestones', adminAuth, async (req, res) => {
   res.json({ success: true, milestones: MILESTONES });
+});
+
+// ============ ADMIN: PARTNER REQUESTS ============
+app.get('/api/admin/partner-requests', adminAuth, async (req, res) => {
+  try {
+    const status = req.query.status;
+    const query = status ? { status } : {};
+    const requests = await PartnerRequest.find(query).sort({ createdAt: -1 }).limit(200);
+    res.json({ success: true, requests });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/partner-requests/approve', adminAuth, async (req, res) => {
+  try {
+    const { requestId, taskTitle, taskReward, taskLink, taskIcon, taskDescription } = req.body;
+    const request = await PartnerRequest.findById(requestId);
+    if (!request) return res.status(404).json({ error: 'NOT_FOUND' });
+    if (request.status !== 'pending') return res.status(400).json({ error: 'ALREADY_PROCESSED' });
+
+    // Create the partner task (using sanitize for safety)
+    const title = sanitize(taskTitle || 'Partner Task');
+    const reward = safeNum(taskReward, 0.0001, 10);
+    if (!reward) return res.status(400).json({ error: 'INVALID_REWARD' });
+    const link = sanitize(taskLink || request.channelLink);
+    const icon = sanitize(taskIcon || '🤝').slice(0, 4);
+    const desc = sanitize(taskDescription || 'Visit partner channel');
+
+    const taskId = 't_partner_' + request._id.toString().slice(-6);
+    const partnerTask = new Task({
+      taskId,
+      title,
+      description: desc,
+      icon,
+      reward,
+      link,
+      type: 'channel',
+      category: 'partner',
+      isVerifiedChannel: false,  // NO verification for partners
+      position: 99
+    });
+    await partnerTask.save();
+
+    request.status = 'approved';
+    request.reviewedAt = new Date();
+    await request.save();
+
+    await logAdmin('APPROVE_PARTNER', request.telegramId, { taskId, title, reward }, req);
+
+    try {
+      await bot.sendMessage(request.telegramId,
+        `🎉 *Partnership Approved!*\n\nYour channel ${request.channelLink} is now a Cats Mining partner!\n\n📋 Task: ${title}\n💰 Reward: ${reward} TON`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch(e) {}
+
+    res.json({ success: true, taskId });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/partner-requests/reject', adminAuth, async (req, res) => {
+  try {
+    const { requestId, reason } = req.body;
+    const request = await PartnerRequest.findById(requestId);
+    if (!request) return res.status(404).json({ error: 'NOT_FOUND' });
+    if (request.status !== 'pending') return res.status(400).json({ error: 'ALREADY_PROCESSED' });
+    request.status = 'rejected';
+    request.reviewedAt = new Date();
+    request.rejectReason = sanitize(reason || 'Not approved');
+    await request.save();
+
+    await logAdmin('REJECT_PARTNER', request.telegramId, { requestId, reason }, req);
+
+    try {
+      await bot.sendMessage(request.telegramId,
+        `❌ *Partnership Rejected*\n\nUnfortunately your request was not approved.\n\nReason: ${request.rejectReason}`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch(e) {}
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ ADMIN: DISCOUNT EVENTS ============
+app.get('/api/admin/events', adminAuth, async (req, res) => {
+  try {
+    const events = await DiscountEvent.find().sort({ createdAt: -1 }).limit(20);
+    res.json({ success: true, events });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/event/create', adminAuth, async (req, res) => {
+  try {
+    const { name, description, discountPercent, durationDays } = req.body;
+    const pct = safeNum(discountPercent, 1, 50);
+    const days = safeNum(durationDays, 1, 30);
+    if (!pct || !days) return res.status(400).json({ error: 'INVALID' });
+
+    // Disable previous active events
+    await DiscountEvent.updateMany({ enabled: true }, { enabled: false });
+
+    const now = new Date();
+    const event = new DiscountEvent({
+      name: sanitize(name || 'Mining Boost Event'),
+      description: sanitize(description || `-${pct}% on all miners for ${days} days`),
+      discountPercent: pct,
+      startsAt: now,
+      endsAt: new Date(now.getTime() + days * 24 * 60 * 60 * 1000),
+      enabled: true
+    });
+    await event.save();
+
+    await logAdmin('CREATE_EVENT', 'system', { name: event.name, pct, days }, req);
+    res.json({ success: true, event });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/event/end', adminAuth, async (req, res) => {
+  try {
+    await DiscountEvent.updateMany({ enabled: true }, { enabled: false });
+    await logAdmin('END_EVENT', 'system', {}, req);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ ADMIN: DUPLICATE MINERS CLEANUP ============
+app.get('/api/admin/check-duplicates', adminAuth, async (req, res) => {
+  try {
+    // Find users with duplicate (telegramId + minerId) ActiveMiners
+    const dupes = await ActiveMiner.aggregate([
+      {
+        $group: {
+          _id: { telegramId: '$telegramId', minerId: '$minerId' },
+          count: { $sum: 1 },
+          docs: { $push: { _id: '$_id', createdAt: '$startedAt', totalCollected: '$totalCollected', price: '$price' } }
+        }
+      },
+      { $match: { count: { $gt: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 100 }
+    ]);
+
+    let totalDupes = 0;
+    let totalExtraMiners = 0;
+    dupes.forEach(d => {
+      totalDupes++;
+      totalExtraMiners += (d.count - 1);
+    });
+
+    res.json({
+      success: true,
+      duplicateGroups: dupes.length,
+      totalExtraMiners,
+      details: dupes.slice(0, 20).map(d => ({
+        telegramId: d._id.telegramId,
+        minerId: d._id.minerId,
+        count: d.count,
+        oldest: new Date(Math.min(...d.docs.map(x => new Date(x.createdAt).getTime())))
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Clean duplicates — keeps OLDEST miner per (telegramId, minerId)
+app.post('/api/admin/clean-duplicates', adminAuth, async (req, res) => {
+  try {
+    const { dryRun } = req.body;  // if true, just report
+
+    const dupes = await ActiveMiner.aggregate([
+      {
+        $group: {
+          _id: { telegramId: '$telegramId', minerId: '$minerId' },
+          count: { $sum: 1 },
+          docs: { $push: { _id: '$_id', startedAt: '$startedAt', totalCollected: '$totalCollected' } }
+        }
+      },
+      { $match: { count: { $gt: 1 } } }
+    ]);
+
+    let removed = 0;
+    let kept = 0;
+    const toDelete = [];
+
+    for (const dup of dupes) {
+      // Sort by oldest first (keep oldest)
+      const sorted = dup.docs.sort((a,b) => new Date(a.startedAt) - new Date(b.startedAt));
+      kept++;
+      // Mark all except the oldest for deletion
+      for (let i = 1; i < sorted.length; i++) {
+        toDelete.push(sorted[i]._id);
+        removed++;
+      }
+    }
+
+    if (!dryRun && toDelete.length > 0) {
+      await ActiveMiner.deleteMany({ _id: { $in: toDelete } });
+      await logAdmin('CLEAN_DUPLICATES', 'system', { removed, kept }, req);
+    }
+
+    res.json({
+      success: true,
+      duplicateGroups: dupes.length,
+      kept,
+      removed,
+      dryRun: !!dryRun,
+      message: dryRun ? `Found ${removed} extras (dry run, nothing deleted)` : `Cleaned ${removed} duplicate miners`
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.post('/api/admin/reseed-tasks', adminAuth, async (req, res) => {

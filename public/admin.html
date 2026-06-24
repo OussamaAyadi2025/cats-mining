@@ -202,6 +202,8 @@ textarea.inp{resize:vertical;min-height:90px;font-family:var(--mono);font-size:1
       <button class="tab" data-tab="referrals" onclick="showTab('referrals',this)">🔗 Referrals</button>
       <button class="tab" data-tab="leaderboard" onclick="showTab('leaderboard',this)">🏆 Leaderboard</button>
       <button class="tab" data-tab="tasks" onclick="showTab('tasks',this)">📋 Tasks</button>
+      <button class="tab" data-tab="partners" onclick="showTab('partners',this)">🤝 Partners</button>
+      <button class="tab" data-tab="events" onclick="showTab('events',this)">⚡ Events</button>
       <button class="tab" data-tab="security" onclick="showTab('security',this)">🛡️ Security</button>
       <button class="tab" data-tab="logs" data-tab="logs" onclick="showTab('logs',this)">📜 Audit Logs</button>
       <button class="tab" data-tab="tools" onclick="showTab('tools',this)">🔧 Tools</button>
@@ -265,6 +267,36 @@ textarea.inp{resize:vertical;min-height:90px;font-family:var(--mono);font-size:1
       <div class="section">
         <h3>🏆 Top Referrers (by Valid Referrals)</h3>
         <div class="tbl-wrap"><table><thead><tr><th>Rank</th><th>User</th><th>Valid</th><th>Pending</th><th>Total</th><th>Deposits</th><th>Commission</th></tr></thead><tbody id="lbBody"></tbody></table></div>
+      </div>
+    </div>
+
+    <!-- PARTNERS -->
+    <div class="panel" id="pan-partners">
+      <div class="section">
+        <h3>🤝 Partner Requests</h3>
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          <button class="btn-sm" style="background:rgba(240,160,48,.15);color:var(--amber-l);border-color:rgba(240,160,48,.4)" onclick="loadPartners('pending')">Pending</button>
+          <button class="btn-sm" onclick="loadPartners('approved')">Approved</button>
+          <button class="btn-sm" onclick="loadPartners('rejected')">Rejected</button>
+          <button class="btn-sm" onclick="loadPartners('')">All</button>
+        </div>
+        <div class="tbl-wrap"><table><thead><tr><th>Applicant</th><th>Channel</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead><tbody id="partnersBody"></tbody></table></div>
+      </div>
+    </div>
+
+    <!-- EVENTS -->
+    <div class="panel" id="pan-events">
+      <div class="section">
+        <h3>⚡ Active Discount Event</h3>
+        <div id="activeEventBody"></div>
+        <h3 style="margin-top:24px">➕ Create New Event</h3>
+        <div class="form-grid">
+          <input class="inp" id="evName" placeholder="Event name (e.g., Mining Boost Event)" value="Mining Boost Event">
+          <input class="inp" id="evDesc" placeholder="Description">
+          <input class="inp" id="evDiscount" type="number" min="1" max="50" placeholder="Discount % (1-50)" value="10">
+          <input class="inp" id="evDays" type="number" min="1" max="30" placeholder="Duration (days)" value="7">
+          <button class="btn btn-primary" onclick="createEvent()">Create Event</button>
+        </div>
       </div>
     </div>
 
@@ -490,7 +522,112 @@ function showTab(t,el){
   else if(t==='security')loadSecurity();
   else if(t==='logs')loadLogs();
   else if(t==='tasks')loadTasks();
+  else if(t==='partners')loadPartners('pending');
+  else if(t==='events')loadActiveEvent();
   af('/api/admin/stats').then(function(d){if(d)renderStats(d)});
+}
+
+// ─── PARTNERS ───
+async function loadPartners(status){
+  var qs = status ? '?status='+status : '';
+  var d = await af('/api/admin/partner-requests'+qs);
+  if(!d)return;
+  var h='';
+  for(var i=0;i<d.requests.length;i++){
+    var p = d.requests[i];
+    var statusBadge = p.status==='pending' ? '<span class="badge pending">Pending</span>' : 
+                      p.status==='approved' ? '<span class="badge verified">Approved</span>' :
+                      '<span class="badge rejected">Rejected</span>';
+    var actions = p.status==='pending' ? 
+      '<button class="btn-sm" style="background:rgba(16,185,129,.15);color:var(--green);border-color:rgba(16,185,129,.4)" onclick="approvePartner(\''+p._id+'\',\''+esc(p.channelLink)+'\')">Approve</button> <button class="btn-sm" style="background:rgba(239,68,68,.15);color:var(--red);border-color:rgba(239,68,68,.4)" onclick="rejectPartner(\''+p._id+'\')">Reject</button>' :
+      '—';
+    h+='<tr>'+
+      '<td><span class="id-link" onclick="openPlayerModal(\''+p.telegramId+'\')">'+esc(p.firstName||p.telegramId)+'</span><br><span style="font-size:10px;color:var(--dim)">@'+esc(p.username||'')+'</span></td>'+
+      '<td style="font-size:11px"><a href="'+esc(p.channelLink)+'" target="_blank" style="color:var(--blue-l)">'+esc(p.channelLink)+'</a>'+(p.description?'<br><span style="color:var(--dim);font-size:10px">'+esc(p.description)+'</span>':'')+'</td>'+
+      '<td style="font-size:11px">'+new Date(p.createdAt).toLocaleDateString()+'</td>'+
+      '<td>'+statusBadge+'</td>'+
+      '<td>'+actions+'</td>'+
+    '</tr>';
+  }
+  document.getElementById('partnersBody').innerHTML = h || '<tr><td colspan="5" style="text-align:center;color:var(--dim);padding:30px">No requests</td></tr>';
+}
+
+async function approvePartner(reqId, channelLink){
+  var title = prompt('Task title (e.g., Join Partner Channel):', 'Join Partner Channel');
+  if(!title)return;
+  var reward = prompt('Reward (TON, e.g., 0.005):', '0.005');
+  if(!reward)return;
+  var rewardNum = parseFloat(reward);
+  if(isNaN(rewardNum) || rewardNum <= 0 || rewardNum > 1){
+    toast('⚠ Invalid reward (must be 0-1)', true);
+    return;
+  }
+  var d = await af('/api/admin/partner-requests/approve', 'POST', {
+    requestId: reqId,
+    taskTitle: title,
+    taskReward: rewardNum,
+    taskLink: channelLink
+  });
+  if(d && d.success){
+    toast('✓ Partner approved + task created');
+    loadPartners('pending');
+  }
+}
+
+async function rejectPartner(reqId){
+  var reason = prompt('Reason for rejection (optional):', '');
+  var d = await af('/api/admin/partner-requests/reject', 'POST', { requestId: reqId, reason: reason||'' });
+  if(d && d.success){
+    toast('✓ Rejected');
+    loadPartners('pending');
+  }
+}
+
+// ─── EVENTS ───
+async function loadActiveEvent(){
+  var d = await af('/api/admin/events');
+  if(!d)return;
+  var box = document.getElementById('activeEventBody');
+  var active = (d.events||[]).find(function(e){ return e.enabled && new Date(e.endsAt) > new Date(); });
+  if(active){
+    var ends = new Date(active.endsAt);
+    var diff = ends - Date.now();
+    var days = Math.floor(diff/(1000*60*60*24));
+    var hours = Math.floor((diff%(1000*60*60*24))/(1000*60*60));
+    box.innerHTML = '<div style="background:linear-gradient(135deg,rgba(168,85,247,.15),rgba(168,85,247,.05));border:1px solid rgba(168,85,247,.4);border-radius:12px;padding:16px">'+
+      '<div style="font-size:16px;font-weight:800;color:#c4b5fd">⚡ '+esc(active.name)+'</div>'+
+      '<div style="font-size:13px;color:var(--text);margin-top:6px">-'+active.discountPercent+'% on all miners</div>'+
+      '<div style="font-size:11px;color:var(--dim);margin-top:4px">Ends in '+days+'d '+hours+'h · '+ends.toLocaleString()+'</div>'+
+      '<button class="btn-sm" style="margin-top:12px;background:rgba(239,68,68,.15);color:var(--red);border-color:rgba(239,68,68,.4)" onclick="endEvent(\''+active._id+'\')">End Event Now</button>'+
+    '</div>';
+  } else {
+    box.innerHTML = '<div style="color:var(--dim);text-align:center;padding:24px">No active event</div>';
+  }
+}
+
+async function createEvent(){
+  var name = document.getElementById('evName').value.trim();
+  var desc = document.getElementById('evDesc').value.trim();
+  var discount = parseFloat(document.getElementById('evDiscount').value);
+  var days = parseInt(document.getElementById('evDays').value);
+  if(!name || isNaN(discount) || discount < 1 || discount > 50 || isNaN(days) || days < 1 || days > 30){
+    toast('⚠ Invalid input', true);
+    return;
+  }
+  var d = await af('/api/admin/event/create', 'POST', { name: name, description: desc, discountPercent: discount, durationDays: days });
+  if(d && d.success){
+    toast('✓ Event created');
+    loadActiveEvent();
+  }
+}
+
+async function endEvent(eventId){
+  if(!confirm('End this event now?'))return;
+  var d = await af('/api/admin/event/end', 'POST', { eventId: eventId });
+  if(d && d.success){
+    toast('✓ Event ended');
+    loadActiveEvent();
+  }
 }
 
 // ─── PLAYER MODAL ───

@@ -80,6 +80,10 @@
           <button class="pnd-btn" id="collect-btn" onclick="collectEarnings()">Collect</button>
         </div>
       </div>
+
+      <!-- DISCOUNT EVENT BANNER (auto-hidden if no event) -->
+      <div class="event-banner" id="event-banner" style="display:none"></div>
+
       <div class="sec-hdr">
         <span id="miners-title">All miners</span>
         <span class="sec-count">9 <span id="miners-levels">levels</span></span>
@@ -282,6 +286,29 @@
   <!-- WITHDRAW MODAL -->
   <div class="modal" id="withdraw-modal" style="display:none" onclick="if(event.target===this)this.style.display='none'">
     <div class="modal-box" id="withdraw-content"></div>
+  </div>
+
+  <!-- PARTNER MODAL -->
+  <div class="modal" id="partner-modal" style="display:none" onclick="if(event.target===this)closePartnerModal()">
+    <div class="modal-box partner-modal-box">
+      <div class="partner-modal-header">
+        <div class="partner-modal-icon">🤝</div>
+        <h3 class="partner-modal-title">Become a Partner</h3>
+        <p class="partner-modal-sub">Promote Cats Mining in your Telegram channel</p>
+      </div>
+      <div class="partner-modal-body">
+        <div class="partner-field">
+          <label class="partner-label">Channel Link</label>
+          <input type="text" class="partner-input" id="partner-link" placeholder="https://t.me/yourchannel" maxlength="100">
+        </div>
+        <div class="partner-field">
+          <label class="partner-label">Description (optional)</label>
+          <textarea class="partner-input partner-textarea" id="partner-desc" placeholder="Tell us about your channel..." maxlength="300"></textarea>
+        </div>
+        <button class="partner-submit" onclick="submitPartnerRequest()">Submit Partnership Request</button>
+        <button class="partner-cancel" onclick="closePartnerModal()">Cancel</button>
+      </div>
+    </div>
   </div>
 
   <!-- TOAST -->

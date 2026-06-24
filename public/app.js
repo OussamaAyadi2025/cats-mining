@@ -148,7 +148,7 @@ async function registerWithId(telegramId, firstName, username, photoUrl, refBy) 
   try {
     const r = await fetch(API+'/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({telegramId,firstName,username,photoUrl,refBy})});
     const d = await r.json();
-    if (d.success) { userData=d.user; renderAll(); startPendingCounter(); }
+    if (d.success) { userData=d.user; renderAll(); startPendingCounter(); loadActiveEvent(); }
     else toast('⚠ '+(d.error||'Error'));
   } catch(e) { toast('⚠ Connection error'); }
 }
@@ -172,6 +172,8 @@ function startPendingCounter() {
     if (document.hidden) return;
     updatePending();
   }, 5000);
+  // Poll event every 60s (in case admin starts/ends one)
+  setInterval(() => { if (!document.hidden) loadActiveEvent(); }, 60000);
 }
 
 async function updatePending() {
@@ -281,7 +283,15 @@ function renderMiners() {
     }
 
     let btnClass = 'buy-btn';
-    let btnText = '<img class="cat-btn" src="images/cat-icon.png"> '+T('buyFor')+' '+m.price+' TON';
+    // Apply event discount
+    let displayPrice = m.price;
+    let priceHtml = m.price + ' TON';
+    if (activeEvent && activeEvent.discountPercent && !isFree && !owned) {
+      const disc = activeEvent.discountPercent;
+      displayPrice = +(m.price * (100 - disc) / 100).toFixed(4);
+      priceHtml = `<span class="orig-price">${m.price}</span> <span class="disc-price">${displayPrice}</span> TON <span class="save-badge">-${disc}%</span>`;
+    }
+    let btnText = '<img class="cat-btn" src="images/cat-icon.png"> '+T('buyFor')+' '+priceHtml;
     if (isFree && !owned) { btnClass+=' free'; btnText=ic('check',12)+' '+T('claimNow'); }
     else if (m.level===7 && !owned) btnClass+=' premium';
     else if (m.level===8 && !owned) btnClass+=' legendary';
@@ -556,14 +566,50 @@ function showSentPage(miner) {
 }
 
 // ============ COLLECT ============
+let collectInFlight = false;
 async function collectEarnings() {
   if (!userData) return;
+  if (collectInFlight) return;   // block double-click
+  collectInFlight = true;
+
+  const btn = document.getElementById('collect-btn');
+  const oldText = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.style.opacity = '.6';
+    btn.style.pointerEvents = 'none';
+    btn.textContent = '...';
+  }
+
   try {
     const r = await fetch(API+'/api/miners/collect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({telegramId:userData.telegramId})});
     const d = await r.json();
-    if (d.success) { toast('+ +'+d.collected.toFixed(4)+' TON'); userData.balance=d.newBalance; updateStats(); }
-    else toast('⚠ '+(d.error||'Nothing to collect'));
-  } catch(e) { toast('⚠ Error'); }
+    if (d.success) {
+      if (d.collected > 0) {
+        toast('+ '+d.collected.toFixed(4)+' TON');
+      } else {
+        toast('⏳ Nothing to collect yet');
+      }
+      userData.balance = d.newBalance;
+      updateStats();
+    } else if (d.error === 'DUPLICATE_REQUEST') {
+      toast('⏱ Please wait before collecting again');
+    } else {
+      toast('⚠ '+(d.message || d.error || 'Nothing to collect'));
+    }
+  } catch(e) { toast('⚠ Network error'); }
+  finally {
+    // Re-enable after 2s (visual + extra safety)
+    setTimeout(() => {
+      collectInFlight = false;
+      if (btn) {
+        btn.disabled = false;
+        btn.style.opacity = '';
+        btn.style.pointerEvents = '';
+        btn.textContent = oldText;
+      }
+    }, 2000);
+  }
 }
 
 // ============ TASKS (with premium icons) ============
@@ -584,6 +630,113 @@ function getTaskIcon(taskId) {
   if (taskId.includes('invite')||taskId.includes('ref')) return TASK_ICONS.t_invite;
   if (taskId.includes('wallet')) return TASK_ICONS.t_wallet;
   return TASK_ICONS.t_news;
+}
+
+let activeEvent = null;
+let eventInterval = null;
+
+// ============ PARTNER ============
+function openPartnerModal() {
+  document.getElementById('partner-modal').style.display = 'flex';
+  document.getElementById('partner-link').value = '';
+  document.getElementById('partner-desc').value = '';
+}
+
+function closePartnerModal() {
+  document.getElementById('partner-modal').style.display = 'none';
+}
+
+async function submitPartnerRequest() {
+  if (!userData) return;
+  const link = document.getElementById('partner-link').value.trim();
+  const desc = document.getElementById('partner-desc').value.trim();
+
+  if (!link.match(/^https?:\/\/(t\.me|telegram\.me)\/[a-zA-Z0-9_+]+$/)) {
+    toast('⚠ Invalid channel link. Use https://t.me/yourchannel');
+    return;
+  }
+
+  try {
+    const r = await fetch(API + '/api/partner/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ telegramId: userData.telegramId, channelLink: link, description: desc })
+    });
+    const d = await r.json();
+    if (d.success) {
+      toast('✓ Request submitted! Admin will review it.');
+      closePartnerModal();
+    } else {
+      toast('⚠ ' + (d.message || d.error || 'Error'));
+    }
+  } catch (e) { toast('⚠ Network error'); }
+}
+
+// ============ DISCOUNT EVENT ============
+async function loadActiveEvent() {
+  try {
+    const r = await fetch(API + '/api/event/current');
+    const d = await r.json();
+    if (d.success && d.event) {
+      activeEvent = d.event;
+      renderEventBanner();
+      // Refresh miner list to show discounted prices
+      if (typeof renderMiners === 'function') renderMiners();
+    } else {
+      activeEvent = null;
+      const banner = document.getElementById('event-banner');
+      if (banner) banner.style.display = 'none';
+      if (eventInterval) { clearInterval(eventInterval); eventInterval = null; }
+    }
+  } catch (e) {}
+}
+
+function renderEventBanner() {
+  if (!activeEvent) return;
+  const banner = document.getElementById('event-banner');
+  if (!banner) return;
+
+  const updateBanner = () => {
+    const now = Date.now();
+    const end = new Date(activeEvent.endsAt).getTime();
+    const diff = end - now;
+    if (diff <= 0) {
+      activeEvent = null;
+      banner.style.display = 'none';
+      if (eventInterval) { clearInterval(eventInterval); eventInterval = null; }
+      if (typeof renderMiners === 'function') renderMiners();
+      return;
+    }
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+    const secs = Math.floor((diff % (1000 * 60)) / 1000);
+
+    banner.style.display = 'block';
+    banner.innerHTML = `
+      <div class="event-glow"></div>
+      <div class="event-content">
+        <div class="event-icon">⚡</div>
+        <div class="event-info">
+          <div class="event-title">${activeEvent.name}</div>
+          <div class="event-discount">-${activeEvent.discountPercent}% on all miners</div>
+        </div>
+        <div class="event-timer">
+          <div class="ev-unit"><span class="ev-val">${days}</span><span class="ev-lbl">D</span></div>
+          <div class="ev-sep">:</div>
+          <div class="ev-unit"><span class="ev-val">${String(hours).padStart(2,'0')}</span><span class="ev-lbl">H</span></div>
+          <div class="ev-sep">:</div>
+          <div class="ev-unit"><span class="ev-val">${String(mins).padStart(2,'0')}</span><span class="ev-lbl">M</span></div>
+          <div class="ev-sep">:</div>
+          <div class="ev-unit"><span class="ev-val">${String(secs).padStart(2,'0')}</span><span class="ev-lbl">S</span></div>
+        </div>
+      </div>
+    `;
+  };
+
+  updateBanner();
+  if (eventInterval) clearInterval(eventInterval);
+  eventInterval = setInterval(updateBanner, 1000);
 }
 
 let currentTaskTab = 'daily';
@@ -666,7 +819,17 @@ async function loadTasks() {
         html += '<div style="text-align:center;color:var(--dm);padding:30px;font-size:13px">No daily tasks available</div>';
       }
     } else {
-      // Channels tab
+      // Channels tab — include Partner card at top
+      html += `<div class="partner-card" id="partner-card">
+        <div class="partner-card-glow"></div>
+        <div class="partner-card-icon">🤝</div>
+        <div class="partner-card-body">
+          <div class="partner-card-title">Become a Partner</div>
+          <div class="partner-card-desc">Promote Cats Mining in your Telegram channel and earn exposure</div>
+          <button class="partner-card-btn" onclick="openPartnerModal()">Submit Request</button>
+        </div>
+      </div>`;
+
       if (channels.length > 0) {
         html += channels.map(renderTask).join('');
       } else {
