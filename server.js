@@ -2276,18 +2276,42 @@ app.post('/api/admin/approve-withdrawal', adminAuth, async (req, res) => {
     await logAdmin('APPROVE_WITHDRAWAL', wd.telegramId, { withdrawalId, amount: wd.amount, netAmount: wd.netAmount, txHash }, req);
     try {
       await bot.sendMessage(wd.telegramId, `✅ Withdrawal approved!\n\n💰 Amount: ${wd.netAmount} TON\n📍 To: \`${wd.walletAddress}\`\n🔗 TX: ${txHash || 'manual'}`, { parse_mode: 'Markdown' });
-    } catch(e) {}
-    // Post proof
+    } catch(e) { console.error('[WITHDRAW] User notify failed:', e.message); }
+
+    // ─── POST PROOF TO PAYOUT CHANNEL ───
     const proofChannel = process.env.PROOF_CHANNEL;
-    if (proofChannel && txHash && txHash !== 'manual') {
+    if (proofChannel) {
       try {
         const masked = '****' + wd.telegramId.slice(-4);
-        await bot.sendMessage(proofChannel,
-          `✅ *Withdrawal Paid*\n👤 User: ${masked}\n💰 ${wd.netAmount.toFixed(4)} TON\n🔗 [View TX](https://tonviewer.com/transaction/${txHash})`,
-          { parse_mode: 'Markdown' }
-        );
-      } catch (e) {}
+        const txLink = txHash && txHash !== 'manual'
+          ? `\n🔗 [View Transaction](https://tonviewer.com/transaction/${txHash})`
+          : '';
+
+        const proofMessage =
+          `✅ *Withdrawal Paid*\n\n` +
+          `👤 User: \`${masked}\`\n` +
+          `💰 Amount: *${wd.netAmount.toFixed(4)} TON*\n` +
+          `📅 ${new Date().toLocaleString('en-US', { hour12: false })}` +
+          txLink;
+
+        await bot.sendMessage(proofChannel, proofMessage, {
+          parse_mode: 'Markdown',
+          disable_web_page_preview: false,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🚀 Start Mining', url: 'https://t.me/MiningCatsBot' }]
+            ]
+          }
+        });
+        console.log(`[PROOF] ✅ Posted to ${proofChannel} for ${wd.telegramId}`);
+      } catch (e) {
+        console.error('[PROOF] ❌ Failed to post to', proofChannel, ':', e.message);
+        console.error('[PROOF] Make sure bot is ADMIN in', proofChannel, 'with "Post Messages" permission');
+      }
+    } else {
+      console.warn('[PROOF] PROOF_CHANNEL env var not set!');
     }
+
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
