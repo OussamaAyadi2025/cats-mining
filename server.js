@@ -1205,31 +1205,58 @@ app.post('/api/tasks/complete', strictLimiter, async (req, res) => {
       );
       console.log(`[TASK-DAILY] ✅ ${tgId} claimed ${taskId} +${finalReward} TON`);
 
-      // ─── REFERRAL ACTIVATION ───
-      // If user has a referrer AND this is daily reward + first claim → validate referral
+      // ─── REFERRAL ACTIVATION (ROBUST) ───
+      // If user has a referrer AND this is daily reward → validate referral (or create if missing)
       if (updated && updated.referredBy && safeTaskId === 't_daily_reward') {
-        const refLog = await ReferralLog.findOne({
-          referrerId: updated.referredBy,
-          referredId: tgId,
-          status: 'pending'
-        });
-        if (refLog) {
-          refLog.status = 'valid';
-          refLog.reason = 'claimed_daily_reward';
-          refLog.verifiedAt = new Date();
-          await refLog.save();
-          console.log(`[REFERRAL] ✅ ${tgId} validated for ${updated.referredBy} (claimed daily)`);
+        try {
+          // Upsert: find OR create + update if status is still 'pending'
+          let refLog = await ReferralLog.findOne({
+            referrerId: updated.referredBy,
+            referredId: tgId
+          });
 
-          // Check milestones for referrer
-          try { await checkMilestones(updated.referredBy); } catch(e) {}
+          if (!refLog) {
+            // No log exists (old user pre-ReferralLog) → create it directly as valid
+            refLog = await ReferralLog.create({
+              referrerId: updated.referredBy,
+              referredId: tgId,
+              status: 'valid',
+              reason: 'claimed_daily_reward',
+              verifiedAt: new Date()
+            }).catch(async (e) => {
+              if (e.code === 11000) {
+                // Race condition - log was created between findOne and create
+                return await ReferralLog.findOne({ referrerId: updated.referredBy, referredId: tgId });
+              }
+              throw e;
+            });
+            console.log(`[REFERRAL] ✅ Created+validated log for ${tgId} → ${updated.referredBy}`);
+          } else if (refLog.status === 'pending') {
+            refLog.status = 'valid';
+            refLog.reason = 'claimed_daily_reward';
+            refLog.verifiedAt = new Date();
+            await refLog.save();
+            console.log(`[REFERRAL] ✅ ${tgId} validated for ${updated.referredBy} (claimed daily)`);
+          } else {
+            console.log(`[REFERRAL] ℹ️ ${tgId} already ${refLog.status} for ${updated.referredBy}`);
+          }
 
-          // Notify referrer
-          try {
-            await bot.sendMessage(updated.referredBy,
-              `🎉 *New Valid Referral!*\n\n@${updated.username||updated.firstName||'user'} just claimed their first daily reward.\n\n✅ Counts toward your milestones!`,
-              { parse_mode: 'Markdown' }
-            );
-          } catch(e) {}
+          // Check milestones for referrer (only if newly validated)
+          if (refLog && (refLog.status === 'valid' || refLog.status === 'paid')) {
+            try { await checkMilestones(updated.referredBy); } catch(e) {}
+          }
+
+          // Notify referrer (only on first validation)
+          if (refLog && refLog.reason === 'claimed_daily_reward') {
+            try {
+              await bot.sendMessage(updated.referredBy,
+                `🎉 *New Valid Referral!*\n\n@${updated.username||updated.firstName||'user'} just claimed their first daily reward.\n\n✅ Counts toward your milestones!`,
+                { parse_mode: 'Markdown' }
+              );
+            } catch(e) {}
+          }
+        } catch(refErr) {
+          console.error('[REFERRAL] Validation error:', refErr.message);
         }
       }
 
@@ -1303,29 +1330,50 @@ app.post('/api/daily-claim', strictLimiter, async (req, res) => {
 
     console.log(`[DAILY] ✅ ${tgId} claimed ${reward} TON`);
 
-    // ─── REFERRAL ACTIVATION ───
-    // If user has a referrer → validate referral on first daily claim
+    // ─── REFERRAL ACTIVATION (ROBUST) ───
     if (updated.referredBy) {
-      const refLog = await ReferralLog.findOne({
-        referrerId: updated.referredBy,
-        referredId: tgId,
-        status: 'pending'
-      });
-      if (refLog) {
-        refLog.status = 'valid';
-        refLog.reason = 'claimed_daily_reward';
-        refLog.verifiedAt = new Date();
-        await refLog.save();
-        console.log(`[REFERRAL] ✅ ${tgId} validated for ${updated.referredBy} (claimed daily)`);
+      try {
+        let refLog = await ReferralLog.findOne({
+          referrerId: updated.referredBy,
+          referredId: tgId
+        });
 
-        try { await checkMilestones(updated.referredBy); } catch(e) {}
+        if (!refLog) {
+          refLog = await ReferralLog.create({
+            referrerId: updated.referredBy,
+            referredId: tgId,
+            status: 'valid',
+            reason: 'claimed_daily_reward',
+            verifiedAt: new Date()
+          }).catch(async (e) => {
+            if (e.code === 11000) {
+              return await ReferralLog.findOne({ referrerId: updated.referredBy, referredId: tgId });
+            }
+            throw e;
+          });
+          console.log(`[REFERRAL] ✅ Created+validated log for ${tgId} → ${updated.referredBy}`);
+        } else if (refLog.status === 'pending') {
+          refLog.status = 'valid';
+          refLog.reason = 'claimed_daily_reward';
+          refLog.verifiedAt = new Date();
+          await refLog.save();
+          console.log(`[REFERRAL] ✅ ${tgId} validated for ${updated.referredBy} (claimed daily)`);
+        }
 
-        try {
-          await bot.sendMessage(updated.referredBy,
-            `🎉 *New Valid Referral!*\n\n@${updated.username||updated.firstName||'user'} just claimed their first daily reward.\n\n✅ Counts toward your milestones!`,
-            { parse_mode: 'Markdown' }
-          );
-        } catch(e) {}
+        if (refLog && (refLog.status === 'valid' || refLog.status === 'paid')) {
+          try { await checkMilestones(updated.referredBy); } catch(e) {}
+        }
+
+        if (refLog && refLog.reason === 'claimed_daily_reward') {
+          try {
+            await bot.sendMessage(updated.referredBy,
+              `🎉 *New Valid Referral!*\n\n@${updated.username||updated.firstName||'user'} just claimed their first daily reward.\n\n✅ Counts toward your milestones!`,
+              { parse_mode: 'Markdown' }
+            );
+          } catch(e) {}
+        }
+      } catch(refErr) {
+        console.error('[REFERRAL] Validation error:', refErr.message);
       }
     }
 
@@ -2542,16 +2590,17 @@ app.get('/api/admin/check-duplicates', adminAuth, async (req, res) => {
 });
 
 // Clean duplicates — keeps OLDEST miner per (telegramId, minerId)
-// Validate pending referrals for users who have claimed daily reward
+// Validate pending referrals + create missing logs for users who claimed daily
 // Useful for fixing users stuck in 'pending' state from before this fix
 app.post('/api/admin/validate-pending-refs', adminAuth, async (req, res) => {
   try {
-    const pending = await ReferralLog.find({ status: 'pending' });
     let validated = 0;
+    let created = 0;
     const milestoneRefIds = new Set();
 
-    for (const log of pending) {
-      // Check if user has claimed daily reward at least once
+    // 1. Fix existing 'pending' logs where user claimed daily
+    const pendingLogs = await ReferralLog.find({ status: 'pending' });
+    for (const log of pendingLogs) {
       const hasClaimed = await DailyClaim.findOne({ telegramId: log.referredId, taskId: 't_daily_reward' });
       const hasLegacyDaily = await User.findOne({ telegramId: log.referredId, lastDaily: { $ne: null } });
 
@@ -2565,14 +2614,54 @@ app.post('/api/admin/validate-pending-refs', adminAuth, async (req, res) => {
       }
     }
 
+    // 2. Create missing logs for users who have referredBy but no log
+    const usersWithRefs = await User.find({ referredBy: { $ne: null } });
+    for (const user of usersWithRefs) {
+      const existingLog = await ReferralLog.findOne({
+        referrerId: user.referredBy,
+        referredId: user.telegramId
+      });
+
+      if (!existingLog) {
+        // Check if claimed daily
+        const hasClaimed = await DailyClaim.findOne({ telegramId: user.telegramId, taskId: 't_daily_reward' });
+        const hasLegacyDaily = user.lastDaily;
+        const status = (hasClaimed || hasLegacyDaily) ? 'valid' : 'pending';
+
+        try {
+          await ReferralLog.create({
+            referrerId: user.referredBy,
+            referredId: user.telegramId,
+            status,
+            reason: status === 'valid' ? 'claimed_daily_reward_retroactive' : 'created_retroactively',
+            verifiedAt: status === 'valid' ? new Date() : null
+          });
+          created++;
+          if (status === 'valid') {
+            milestoneRefIds.add(user.referredBy);
+            validated++;
+          }
+        } catch(e) {
+          // Already exists (race) - skip
+        }
+      }
+    }
+
     // Check milestones for affected referrers
     for (const refId of milestoneRefIds) {
       try { await checkMilestones(refId); } catch(e) {}
     }
 
-    await logAdmin('VALIDATE_PENDING_REFS', 'system', { validated }, req);
-    res.json({ success: true, validated, total: pending.length });
+    await logAdmin('VALIDATE_PENDING_REFS', 'system', { validated, created }, req);
+    res.json({
+      success: true,
+      validated,
+      logsCreated: created,
+      milestonesChecked: milestoneRefIds.size,
+      message: `Fixed ${validated} referrals · Created ${created} missing logs`
+    });
   } catch (error) {
+    console.error('[VALIDATE-REFS]', error);
     res.status(500).json({ error: error.message });
   }
 });
