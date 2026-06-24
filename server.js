@@ -1302,6 +1302,33 @@ app.post('/api/daily-claim', strictLimiter, async (req, res) => {
     }
 
     console.log(`[DAILY] ✅ ${tgId} claimed ${reward} TON`);
+
+    // ─── REFERRAL ACTIVATION ───
+    // If user has a referrer → validate referral on first daily claim
+    if (updated.referredBy) {
+      const refLog = await ReferralLog.findOne({
+        referrerId: updated.referredBy,
+        referredId: tgId,
+        status: 'pending'
+      });
+      if (refLog) {
+        refLog.status = 'valid';
+        refLog.reason = 'claimed_daily_reward';
+        refLog.verifiedAt = new Date();
+        await refLog.save();
+        console.log(`[REFERRAL] ✅ ${tgId} validated for ${updated.referredBy} (claimed daily)`);
+
+        try { await checkMilestones(updated.referredBy); } catch(e) {}
+
+        try {
+          await bot.sendMessage(updated.referredBy,
+            `🎉 *New Valid Referral!*\n\n@${updated.username||updated.firstName||'user'} just claimed their first daily reward.\n\n✅ Counts toward your milestones!`,
+            { parse_mode: 'Markdown' }
+          );
+        } catch(e) {}
+      }
+    }
+
     res.json({ success: true, reward, newBalance: updated.balance });
   } catch (error) {
     console.error('[DAILY]', error);
@@ -2515,6 +2542,41 @@ app.get('/api/admin/check-duplicates', adminAuth, async (req, res) => {
 });
 
 // Clean duplicates — keeps OLDEST miner per (telegramId, minerId)
+// Validate pending referrals for users who have claimed daily reward
+// Useful for fixing users stuck in 'pending' state from before this fix
+app.post('/api/admin/validate-pending-refs', adminAuth, async (req, res) => {
+  try {
+    const pending = await ReferralLog.find({ status: 'pending' });
+    let validated = 0;
+    const milestoneRefIds = new Set();
+
+    for (const log of pending) {
+      // Check if user has claimed daily reward at least once
+      const hasClaimed = await DailyClaim.findOne({ telegramId: log.referredId, taskId: 't_daily_reward' });
+      const hasLegacyDaily = await User.findOne({ telegramId: log.referredId, lastDaily: { $ne: null } });
+
+      if (hasClaimed || hasLegacyDaily) {
+        log.status = 'valid';
+        log.reason = 'claimed_daily_reward_retroactive';
+        log.verifiedAt = new Date();
+        await log.save();
+        validated++;
+        milestoneRefIds.add(log.referrerId);
+      }
+    }
+
+    // Check milestones for affected referrers
+    for (const refId of milestoneRefIds) {
+      try { await checkMilestones(refId); } catch(e) {}
+    }
+
+    await logAdmin('VALIDATE_PENDING_REFS', 'system', { validated }, req);
+    res.json({ success: true, validated, total: pending.length });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/admin/clean-duplicates', adminAuth, async (req, res) => {
   try {
     const { dryRun } = req.body;  // if true, just report
