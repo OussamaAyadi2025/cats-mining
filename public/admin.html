@@ -245,7 +245,7 @@ textarea.inp{resize:vertical;min-height:90px;font-family:var(--mono);font-size:1
           <button class="sort-btn" data-dep="verified" onclick="filterDeposits('verified',this)">✅ Verified</button>
           <button class="sort-btn" data-dep="pending" onclick="filterDeposits('pending',this)">⏳ Pending</button>
         </div>
-        <div class="tbl-wrap"><table><thead><tr><th>Player</th><th>Amount</th><th>Status</th><th>Memo</th><th>Method</th><th>Date</th></tr></thead><tbody id="depBody"></tbody></table></div>
+        <div class="tbl-wrap"><table><thead><tr><th>Player</th><th>Amount</th><th>Status</th><th>Memo</th><th>Method</th><th>Date</th><th>Action</th></tr></thead><tbody id="depBody"></tbody></table></div>
       </div>
     </div>
 
@@ -960,6 +960,11 @@ async function loadDeposits(){
   var deps=d.deposits||[];
   for(var i=0;i<deps.length;i++){
     var dp=deps[i];
+    var actions = '';
+    if(dp.status === 'pending'){
+      actions = '<button class="btn btn-success btn-sm" onclick="verifyDepositManual(\''+dp._id+'\')">✓ Verify</button> ' +
+                '<button class="btn btn-danger btn-sm" onclick="cancelDeposit(\''+dp._id+'\')">✗ Cancel</button>';
+    }
     h+='<tr>'+
       '<td class="id-link">'+dp.telegramId+'</td>'+
       '<td><b>'+(dp.amount||0).toFixed(2)+' TON</b></td>'+
@@ -967,9 +972,36 @@ async function loadDeposits(){
       '<td style="font-family:var(--mono);font-size:10px;color:var(--dim)">'+esc(dp.memo||'-')+'</td>'+
       '<td><span style="font-size:10px;color:var(--blue-l)">'+esc(dp.matchMethod||'-')+'</span></td>'+
       '<td style="font-size:10px;color:var(--dim)">'+new Date(dp.createdAt).toLocaleString()+'</td>'+
+      '<td>'+actions+'</td>'+
     '</tr>';
   }
-  document.getElementById('depBody').innerHTML=h||'<tr><td colspan="6" style="text-align:center;color:var(--dim);padding:30px">No deposits</td></tr>';
+  document.getElementById('depBody').innerHTML=h||'<tr><td colspan="7" style="text-align:center;color:var(--dim);padding:30px">No deposits</td></tr>';
+}
+
+async function verifyDepositManual(depositId){
+  var txHash = prompt('Enter TX hash (from tonviewer or user):');
+  if(!txHash || txHash.length < 20){
+    if(txHash !== null) toast('Invalid TX hash', true);
+    return;
+  }
+  if(!confirm('Confirm manual verification?\n\nThis will:\n• Activate the miner\n• Credit deposit to user\n• Cannot be undone')) return;
+
+  var d = await af('/api/admin/verify-deposit-manual', 'POST', { depositId: depositId, txHash: txHash.trim() });
+  if(d && d.success){
+    toast('✅ Deposit verified manually');
+    loadDeposits();
+  } else if(d) {
+    toast('❌ ' + (d.error || 'Failed'), true);
+  }
+}
+
+async function cancelDeposit(depositId){
+  if(!confirm('Cancel this pending deposit?\nUser will need to create a new one.')) return;
+  var d = await af('/api/admin/cancel-deposit', 'POST', { depositId: depositId });
+  if(d && d.success){
+    toast('Deposit cancelled');
+    loadDeposits();
+  }
 }
 
 // ─── REFERRALS ───

@@ -2653,6 +2653,124 @@ app.get('/api/admin/deposits', adminAuth, async (req, res) => {
   }
 });
 
+// Manually verify a specific pending deposit (when auto-match failed)
+// Use case: user paid but memo didn't match exactly (testnet, typo, etc.)
+app.post('/api/admin/verify-deposit-manual', adminAuth, async (req, res) => {
+  try {
+    const { depositId, txHash } = req.body;
+    if (!isValidObjectId(depositId)) {
+      return res.status(400).json({ error: 'INVALID_DEPOSIT_ID' });
+    }
+    if (!isValidString(txHash, 200)) {
+      return res.status(400).json({ error: 'INVALID_TXHASH' });
+    }
+
+    // Check if this txHash was already used
+    const txExists = await ProcessedTx.findOne({ txHash });
+    if (txExists) {
+      return res.status(400).json({ error: 'TXHASH_ALREADY_USED', message: 'This TX already activated another deposit' });
+    }
+
+    // Atomic lock: pending → processing
+    const dep = await Deposit.findOneAndUpdate(
+      { _id: depositId, status: 'pending' },
+      { $set: { status: 'processing' } },
+      { new: true }
+    );
+    if (!dep) return res.status(400).json({ error: 'NOT_PENDING_OR_NOT_FOUND' });
+
+    try {
+      // Record in TX ledger
+      await ProcessedTx.create({
+        txHash,
+        amount: dep.amount,
+        memo: dep.memo,
+        telegramId: dep.telegramId,
+        depositId: dep._id.toString(),
+        minerId: dep.minerId,
+        processedAt: new Date()
+      });
+    } catch(txErr) {
+      await Deposit.findOneAndUpdate({ _id: dep._id }, { $set: { status: 'pending' } });
+      if (txErr.code === 11000) return res.status(400).json({ error: 'TXHASH_RACE' });
+      throw txErr;
+    }
+
+    // Mark deposit verified
+    dep.status = 'verified';
+    dep.txHash = txHash;
+    dep.matchMethod = 'ADMIN_MANUAL';
+    dep.verifiedAt = new Date();
+    await dep.save();
+
+    // Activate miner
+    const minerConfig = MINERS_CONFIG.find(m => m.id === dep.minerId);
+    if (minerConfig) {
+      try {
+        const activateAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        await ActiveMiner.create({
+          telegramId: dep.telegramId,
+          minerId: minerConfig.id,
+          minerName: minerConfig.name,
+          level: minerConfig.level,
+          price: minerConfig.price,
+          daily: minerConfig.daily,
+          totalReturn: minerConfig.total,
+          startsEarningAt: activateAt,
+          expiresAt: new Date(activateAt.getTime() + minerConfig.days * 24 * 60 * 60 * 1000),
+          fromDepositId: dep._id.toString()
+        });
+      } catch(e) {
+        console.error('[MANUAL-VERIFY] Miner activation failed:', e.message);
+      }
+    }
+
+    // Update user totalDeposited
+    await User.findOneAndUpdate(
+      { telegramId: dep.telegramId },
+      { $inc: { totalDeposited: dep.amount, totalInvested: dep.amount } }
+    );
+
+    // Notify user
+    try {
+      await bot.sendMessage(dep.telegramId,
+        `✅ *Deposit confirmed!*\n\n💰 ${dep.amount} TON received\n🐱 Miner: ${minerConfig?.name || dep.minerId}\n⏳ Starts earning in 24h`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch(e) {}
+
+    await logAdmin('MANUAL_VERIFY_DEPOSIT', dep.telegramId, { depositId, txHash, amount: dep.amount }, req);
+    console.log(`[MANUAL-VERIFY] ✅ Admin verified deposit ${depositId} (${dep.amount} TON) for ${dep.telegramId}`);
+
+    res.json({ success: true, deposit: dep });
+  } catch (error) {
+    console.error('[MANUAL-VERIFY]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Force-cancel pending deposit (user request or mistake)
+app.post('/api/admin/cancel-deposit', adminAuth, async (req, res) => {
+  try {
+    const { depositId } = req.body;
+    if (!isValidObjectId(depositId)) {
+      return res.status(400).json({ error: 'INVALID_DEPOSIT_ID' });
+    }
+
+    const dep = await Deposit.findOneAndUpdate(
+      { _id: depositId, status: 'pending' },
+      { $set: { status: 'failed' } },
+      { new: true }
+    );
+    if (!dep) return res.status(400).json({ error: 'NOT_PENDING_OR_NOT_FOUND' });
+
+    await logAdmin('CANCEL_DEPOSIT', dep.telegramId, { depositId, amount: dep.amount }, req);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Referrals audit log
 app.get('/api/admin/referrals', adminAuth, async (req, res) => {
   try {
