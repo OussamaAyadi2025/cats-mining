@@ -654,10 +654,9 @@ app.post('/api/miners/buy', strictLimiter, async (req, res) => {
         success: true,
         type: 'deposit_required',
         walletAddress: process.env.BOT_WALLET,
-        amount: existing.uniqueAmount || existing.amount,
+        amount: existing.amount,
         originalPrice: minerConfig.price,
         discount,
-        uniqueAmount: existing.uniqueAmount || existing.amount,
         memo: existing.memo,
         depositId: existing._id.toString(),
         reused: true
@@ -670,14 +669,13 @@ app.post('/api/miners/buy', strictLimiter, async (req, res) => {
       { $set: { status: 'expired', expiredAt: new Date() } }
     );
 
-    // Create new deposit with unique memo
+    // Create new deposit with unique memo (memo is THE identifier, not amount)
     const depositId = Math.random().toString(36).substring(2, 8).toUpperCase();
     const memo = `CM${tgId}_${depositId}`;
 
     const deposit = new Deposit({
       telegramId: tgId,
       amount: finalPrice,
-      uniqueAmount: finalPrice,
       minerId: minerConfig.id,
       memo: memo
     });
@@ -692,7 +690,6 @@ app.post('/api/miners/buy', strictLimiter, async (req, res) => {
       amount: finalPrice,
       originalPrice: minerConfig.price,
       discount,
-      uniqueAmount: finalPrice,
       memo: memo,
       depositId: deposit._id.toString()
     });
@@ -1793,6 +1790,16 @@ async function verifyDeposits() {
         } catch(e) {}
       }
 
+      // ═══════════════════════════════════════════════════
+      // 🚫 EARLY FILTER: Skip TXs that aren't ours
+      // If memo doesn't start with "CM", it's not our deposit format
+      // This prevents log spam from DeDust/staking/random TXs
+      // ═══════════════════════════════════════════════════
+      if (!memo || !memo.startsWith('CM') || memo.length < 6) {
+        // Silently skip — only log every 20th to keep logs clean
+        continue;
+      }
+
       console.log(`\n[TX] ────────────────────────────`);
       console.log(`[TX] Amount: ${amountTON} TON (${amountNano} nano)`);
       console.log(`[TX] Memo: "${memo}"`);
@@ -1815,54 +1822,46 @@ async function verifyDeposits() {
       }
 
       // ═══════════════════════════════════════════════════
-      // 🎯 MATCHING LOGIC — STRICT
-      // PRIORITY 1: MEMO match (exact)
-      // PRIORITY 2: UNIQUE_AMOUNT match (within 0.0001 TON)
-      // PRIORITY 3: NO fuzzy/EXACT_AMOUNT match (security risk)
+      // 🎯 MATCHING LOGIC — STRICT MEMO-ONLY
+      // The ONLY way to match a deposit is via EXACT memo (CM<userId>_<id>)
+      // No fuzzy matching, no amount-only matching = no false positives
       // ═══════════════════════════════════════════════════
       let matchedDep = null;
       let matchMethod = '';
 
-      // ─── PRIORITY 1: MEMO MATCH (CM<userId>_<id>) ───
-      if (memo && memo.length >= 3 && memo.startsWith('CM')) {
+      // ─── PURE MEMO MATCH (no uniqueAmount, no fuzzy logic) ───
+      // The memo is unique per deposit (CM<userId>_<6chars>)
+      // If the memo matches → that's THE deposit, no ambiguity possible
+      if (memo && memo.length >= 6 && memo.startsWith('CM')) {
         for (const dep of pending) {
           if (!dep.memo) continue;
-          // EXACT match required
+
+          // STRICT: memo must match EXACTLY
           if (memo === dep.memo) {
-            // Verify amount within tolerance (max 5% off)
-            const expectedAmount = dep.uniqueAmount || dep.amount;
-            const tolerance = expectedAmount * 0.05;
-            if (Math.abs(amountTON - expectedAmount) <= tolerance) {
+            // Amount must be at least 95% of expected (TON Connect rounding + tx fees)
+            // Reject if user paid significantly less than they should
+            const expectedAmount = dep.amount;
+            const minAcceptable = expectedAmount * 0.95;
+
+            if (amountTON >= minAcceptable) {
               matchedDep = dep;
               matchMethod = 'MEMO';
-              console.log(`[MATCH] ✅ MEMO exact match: deposit=${dep._id}`);
+              console.log(`[MATCH] ✅ MEMO match: deposit=${dep._id} memo=${memo} paid=${amountTON}/${expectedAmount}`);
               break;
             } else {
-              console.log(`[MATCH] ⚠️ MEMO matches but amount off: ${amountTON} vs expected ${expectedAmount}`);
+              console.log(`[MATCH] ⚠️ MEMO matches but UNDERPAID: paid=${amountTON} < required=${minAcceptable} (95% of ${expectedAmount})`);
             }
           }
         }
       }
 
-      // ─── PRIORITY 2: UNIQUE_AMOUNT (precise within 0.0001 TON) ───
-      // Only if unique enough among pendings (no ambiguity)
+      // NO FALLBACK — memo is the only path
       if (!matchedDep) {
-        const candidates = pending.filter(d => {
-          if (!d.uniqueAmount) return false;
-          return Math.abs(amountTON - d.uniqueAmount) < 0.0001;
-        });
-        if (candidates.length === 1) {
-          matchedDep = candidates[0];
-          matchMethod = 'UNIQUE_AMOUNT';
-          console.log(`[MATCH] ✅ UNIQUE_AMOUNT match: ${amountTON} ≈ ${matchedDep.uniqueAmount}`);
-        } else if (candidates.length > 1) {
-          console.log(`[MATCH] ⚠️ ${candidates.length} candidates with unique amount ${amountTON} - REJECT (memo required)`);
+        if (!memo || !memo.startsWith('CM')) {
+          console.log(`[MATCH] ❌ REJECT: invalid memo format (${memo ? memo.slice(0,20) : 'empty'}) for ${amountTON} TON`);
+        } else {
+          console.log(`[MATCH] ❌ REJECT: no matching pending deposit for memo=${memo} amount=${amountTON}`);
         }
-      }
-
-      // NO FALLBACK — if no exact match, deposit is rejected
-      if (!matchedDep) {
-        console.log(`[MATCH] ❌ NO MATCH for ${amountTON} TON, memo="${memo}"`);
         continue;
       }
 
@@ -3385,6 +3384,50 @@ app.post('/api/admin/validate-pending-refs', adminAuth, async (req, res) => {
 });
 
 // Cleanup OLD pending deposits (older than X hours - never matched)
+// Wallet reset — when migrating to new BOT_WALLET
+// Clears all pending deposits + processed TX history
+// USE WITH CAUTION: only after changing BOT_WALLET env var
+app.post('/api/admin/wallet-reset', adminAuth, async (req, res) => {
+  try {
+    const { confirm } = req.body;
+    if (confirm !== 'YES_RESET_WALLET') {
+      return res.status(400).json({
+        error: 'CONFIRMATION_REQUIRED',
+        message: 'Send {"confirm":"YES_RESET_WALLET"} to proceed'
+      });
+    }
+
+    // 1. Delete all pending deposits (users will need to create new ones)
+    const depResult = await Deposit.deleteMany({ status: 'pending' });
+
+    // 2. Clear ProcessedTx ledger (old TXs to old wallet no longer matter)
+    const txResult = await ProcessedTx.deleteMany({});
+
+    // 3. Mark old verified deposits as 'legacy' (keep for audit)
+    await Deposit.updateMany(
+      { status: 'verified', createdAt: { $lt: new Date() } },
+      { $set: { status: 'legacy' } }
+    );
+
+    await logAdmin('WALLET_RESET', 'system', {
+      pendingDeleted: depResult.deletedCount,
+      txCleared: txResult.deletedCount
+    }, req);
+
+    console.log(`[WALLET-RESET] ✅ Deleted ${depResult.deletedCount} pending + ${txResult.deletedCount} processed TXs`);
+
+    res.json({
+      success: true,
+      pendingDeleted: depResult.deletedCount,
+      txCleared: txResult.deletedCount,
+      message: 'Wallet reset complete. Users must create new deposits.'
+    });
+  } catch (error) {
+    console.error('[WALLET-RESET]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/admin/cleanup-pending-deposits', adminAuth, async (req, res) => {
   try {
     const { telegramId, hoursOld } = req.body;
