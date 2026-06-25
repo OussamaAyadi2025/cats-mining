@@ -2901,11 +2901,18 @@ app.get('/api/admin/player/:id', adminAuth, async (req, res) => {
 // Admin audit logs
 app.get('/api/admin/logs', adminAuth, async (req, res) => {
   try {
-    const action = req.query.action;
-    const search = req.query.search;
+    let search = String(req.query.search || '').slice(0, 50);
+    // Escape regex special chars (prevents ReDoS)
+    search = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    const action = String(req.query.action || '').slice(0, 50);
+    // Whitelist action names (alphanumeric + underscore only)
+    const safeAction = /^[A-Z0-9_]{1,50}$/.test(action) ? action : null;
+
     const query = {};
-    if (action) query.action = action;
+    if (safeAction) query.action = safeAction;
     if (search) query.targetId = { $regex: search, $options: 'i' };
+
     const logs = await AdminLog.find(query).sort({ createdAt: -1 }).limit(200);
     res.json({ success: true, logs });
   } catch (error) {
