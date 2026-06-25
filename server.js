@@ -8,12 +8,26 @@ const app = express();
 
 // CORS - allow frontend to call backend
 app.use((req, res, next) => {
+  // CORS
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Content-Type, x-admin-key');
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+
+  // Security headers (prevent clickjacking, MIME sniffing, XSS in older browsers)
+  res.header('X-Content-Type-Options', 'nosniff');
+  res.header('X-Frame-Options', 'SAMEORIGIN');
+  res.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+
+  // Don't expose Express version
+  res.removeHeader('X-Powered-By');
+
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
+
+// Disable X-Powered-By header
+app.disable('x-powered-by');
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static('public'));
@@ -2072,12 +2086,113 @@ async function seedTasks() {
   console.log('✅ Tasks seeded: 2 daily + 2 channels');
 }
 
-// ============ ADMIN AUTH ============
-function adminAuth(req, res, next) {
-  const key = req.headers['x-admin-key'] || req.query.key;
-  if (key !== process.env.ADMIN_KEY) return res.status(401).json({ error: 'Unauthorized' });
-  next();
+// ============ ADMIN AUTH (HARDENED) ============
+const crypto = require('crypto');
+
+// Track failed admin auth attempts per IP
+const adminFailedAttempts = new Map();   // ip -> { count, lastAttempt, blockedUntil }
+const ADMIN_MAX_ATTEMPTS = 5;
+const ADMIN_BLOCK_DURATION = 30 * 60 * 1000;   // 30 min block after 5 failures
+const ADMIN_ATTEMPT_WINDOW = 15 * 60 * 1000;   // 15 min sliding window
+
+// Timing-safe string compare (prevents timing attacks)
+function safeCompare(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) {
+    // Constant-time even for length mismatch
+    crypto.timingSafeEqual(Buffer.from('0'.repeat(64)), Buffer.from('1'.repeat(64)));
+    return false;
+  }
+  try {
+    return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  } catch(e) {
+    return false;
+  }
 }
+
+// Strict input type validation — prevents NoSQL injection
+function isValidString(val, maxLen = 200) {
+  return typeof val === 'string' && val.length > 0 && val.length <= maxLen;
+}
+function isValidObjectId(val) {
+  return typeof val === 'string' && /^[a-f0-9]{24}$/i.test(val);
+}
+function isValidTelegramId(val) {
+  // Telegram IDs are numeric strings, max 20 chars
+  return typeof val === 'string' && /^\d{1,20}$/.test(val);
+}
+function isValidNumber(val, min = -Infinity, max = Infinity) {
+  const n = Number(val);
+  return Number.isFinite(n) && n >= min && n <= max;
+}
+
+function adminAuth(req, res, next) {
+  // Get IP (prefer X-Forwarded-For from proxy)
+  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || 'unknown';
+  const now = Date.now();
+
+  // Check if IP is blocked
+  const record = adminFailedAttempts.get(ip);
+  if (record && record.blockedUntil && now < record.blockedUntil) {
+    const minutesLeft = Math.ceil((record.blockedUntil - now) / 60000);
+    console.warn(`[ADMIN-AUTH] 🚫 IP ${ip} BLOCKED (${minutesLeft}m left)`);
+    return res.status(429).json({
+      error: 'IP_BLOCKED',
+      message: `Too many failed attempts. Try again in ${minutesLeft} minutes.`
+    });
+  }
+
+  // Reset old attempt records (outside window)
+  if (record && (now - record.lastAttempt) > ADMIN_ATTEMPT_WINDOW) {
+    record.count = 0;
+  }
+
+  // Only accept key from header (not query) for security
+  const key = req.headers['x-admin-key'];
+
+  // Reject missing or wrong-type keys immediately
+  if (!key || typeof key !== 'string' || !process.env.ADMIN_KEY) {
+    return registerFailure();
+  }
+
+  // Timing-safe compare
+  if (!safeCompare(key, process.env.ADMIN_KEY)) {
+    return registerFailure();
+  }
+
+  // Success - reset attempts for this IP
+  if (record) adminFailedAttempts.delete(ip);
+  req.adminIp = ip;
+  next();
+
+  function registerFailure() {
+    const r = adminFailedAttempts.get(ip) || { count: 0, lastAttempt: 0 };
+    r.count++;
+    r.lastAttempt = now;
+
+    if (r.count >= ADMIN_MAX_ATTEMPTS) {
+      r.blockedUntil = now + ADMIN_BLOCK_DURATION;
+      console.error(`[ADMIN-AUTH] 🚨 IP ${ip} BLOCKED after ${r.count} failed attempts!`);
+    } else {
+      console.warn(`[ADMIN-AUTH] ⚠️ Failed attempt from ${ip} (${r.count}/${ADMIN_MAX_ATTEMPTS})`);
+    }
+    adminFailedAttempts.set(ip, r);
+
+    // Don't reveal whether the key is right format or wrong value
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+}
+
+// Cleanup old failed-attempts records every 30 min
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, r] of adminFailedAttempts.entries()) {
+    if ((r.blockedUntil && now > r.blockedUntil) ||
+        (now - r.lastAttempt) > ADMIN_ATTEMPT_WINDOW * 2) {
+      adminFailedAttempts.delete(ip);
+    }
+  }
+}, 30 * 60 * 1000);
 
 // ============ ADMIN ENDPOINTS ============
 app.get('/api/admin/stats', adminAuth, async (req, res) => {
@@ -2108,24 +2223,31 @@ app.get('/api/admin/stats', adminAuth, async (req, res) => {
 
 app.get('/api/admin/players', adminAuth, async (req, res) => {
   try {
-    const search = req.query.search || '';
-    const page = parseInt(req.query.page) || 1;
+    let search = String(req.query.search || '').slice(0, 50);   // max 50 chars
+    // Escape special regex characters to prevent ReDoS
+    search = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    const page = Math.max(1, Math.min(1000, parseInt(req.query.page) || 1));
     const limit = 50;
     const skip = (page - 1) * limit;
-    const sort = req.query.sort || 'date';
+    const sort = String(req.query.sort || 'date');
 
     const query = search ? {
       $or: [
-        { telegramId: { $regex: search, $options: 'i' } },
-        { firstName: { $regex: search, $options: 'i' } },
-        { username: { $regex: search, $options: 'i' } }
+        { telegramId: { $regex: '^' + search, $options: 'i' } },   // prefix match only
+        { firstName: { $regex: search.slice(0, 30), $options: 'i' } },
+        { username: { $regex: search.slice(0, 30), $options: 'i' } }
       ]
     } : {};
 
-    let sortObj = { createdAt: -1 };
-    if (sort === 'deposit') sortObj = { totalDeposited: -1 };
-    if (sort === 'balance') sortObj = { balance: -1 };
-    if (sort === 'refs') sortObj = { 'referrals': -1 };
+    // Whitelist sort options
+    const SORT_MAP = {
+      'date': { createdAt: -1 },
+      'deposit': { totalDeposited: -1 },
+      'balance': { balance: -1 },
+      'refs': { 'referrals': -1 }
+    };
+    const sortObj = SORT_MAP[sort] || SORT_MAP['date'];
 
     const total = await User.countDocuments(query);
     const players = await User.find(query).sort(sortObj).skip(skip).limit(limit);
@@ -2144,8 +2266,18 @@ app.get('/api/admin/players', adminAuth, async (req, res) => {
 app.post('/api/admin/ban-player', adminAuth, async (req, res) => {
   try {
     const { telegramId, banned } = req.body;
-    await User.findOneAndUpdate({ telegramId: telegramId.toString() }, { banned });
-    await logAdmin(banned ? 'BAN_PLAYER' : 'UNBAN_PLAYER', telegramId, { banned }, req);
+    if (!isValidTelegramId(String(telegramId))) {
+      return res.status(400).json({ error: 'INVALID_TELEGRAM_ID' });
+    }
+    if (typeof banned !== 'boolean') {
+      return res.status(400).json({ error: 'INVALID_BANNED' });
+    }
+    const tgId = String(telegramId);
+
+    const updated = await User.findOneAndUpdate({ telegramId: tgId }, { banned }, { new: true });
+    if (!updated) return res.status(404).json({ error: 'NOT_FOUND' });
+
+    await logAdmin(banned ? 'BAN_PLAYER' : 'UNBAN_PLAYER', tgId, { banned }, req);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -2155,9 +2287,29 @@ app.post('/api/admin/ban-player', adminAuth, async (req, res) => {
 app.post('/api/admin/edit-balance', adminAuth, async (req, res) => {
   try {
     const { telegramId, amount } = req.body;
-    const user = await User.findOneAndUpdate({ telegramId: telegramId.toString() }, { $inc: { balance: amount } }, { new: true });
+    if (!isValidTelegramId(String(telegramId))) {
+      return res.status(400).json({ error: 'INVALID_TELEGRAM_ID' });
+    }
+    if (!isValidNumber(amount, -10000, 10000)) {
+      return res.status(400).json({ error: 'INVALID_AMOUNT' });
+    }
+    const tgId = String(telegramId);
+    const amt = Number(amount);
+
+    const user = await User.findOneAndUpdate(
+      { telegramId: tgId },
+      { $inc: { balance: amt } },
+      { new: true }
+    );
     if (!user) return res.status(404).json({ error: 'User not found' });
-    await logAdmin('EDIT_BALANCE', telegramId, { amount, newBalance: user.balance }, req);
+
+    // Prevent negative balance
+    if (user.balance < 0) {
+      await User.findOneAndUpdate({ telegramId: tgId }, { $inc: { balance: -amt } });
+      return res.status(400).json({ error: 'WOULD_GO_NEGATIVE' });
+    }
+
+    await logAdmin('EDIT_BALANCE', tgId, { amount: amt, newBalance: user.balance }, req);
     res.json({ success: true, newBalance: user.balance });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -2167,21 +2319,32 @@ app.post('/api/admin/edit-balance', adminAuth, async (req, res) => {
 app.post('/api/admin/give-miner', adminAuth, async (req, res) => {
   try {
     const { telegramId, minerId } = req.body;
+    if (!isValidTelegramId(String(telegramId))) {
+      return res.status(400).json({ error: 'INVALID_TELEGRAM_ID' });
+    }
+    if (!isValidString(minerId, 50)) {
+      return res.status(400).json({ error: 'INVALID_MINER_ID' });
+    }
+
+    const tgId = String(telegramId);
     const minerConfig = MINERS_CONFIG.find(m => m.id === minerId);
     if (!minerConfig) return res.status(400).json({ error: 'Invalid miner' });
 
-    const miner = new ActiveMiner({
-      telegramId: telegramId.toString(),
+    const user = await User.findOne({ telegramId: tgId }).select('_id').lean();
+    if (!user) return res.status(404).json({ error: 'USER_NOT_FOUND' });
+
+    const miner = await ActiveMiner.create({
+      telegramId: tgId,
       minerId: minerConfig.id,
       minerName: minerConfig.name,
       level: minerConfig.level,
       price: 0,
       daily: minerConfig.daily,
       totalReturn: minerConfig.total,
+      startsEarningAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
       expiresAt: new Date(Date.now() + minerConfig.days * 24 * 60 * 60 * 1000)
     });
-    await miner.save();
-    await logAdmin('GIVE_MINER', telegramId, { minerId, minerName: minerConfig.name }, req);
+    await logAdmin('GIVE_MINER', tgId, { minerId, minerName: minerConfig.name }, req);
     res.json({ success: true, miner });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -2190,28 +2353,48 @@ app.post('/api/admin/give-miner', adminAuth, async (req, res) => {
 
 app.post('/api/admin/give-miner-all', adminAuth, async (req, res) => {
   try {
-    const { minerId } = req.body;
+    const { minerId, confirm } = req.body;
+
+    // Require explicit confirmation to prevent accidents
+    if (confirm !== 'YES_GIVE_TO_ALL') {
+      return res.status(400).json({
+        error: 'CONFIRMATION_REQUIRED',
+        message: 'Send {"confirm":"YES_GIVE_TO_ALL"} to proceed'
+      });
+    }
+
+    if (!isValidString(minerId, 50)) {
+      return res.status(400).json({ error: 'INVALID_MINER_ID' });
+    }
+
     const minerConfig = MINERS_CONFIG.find(m => m.id === minerId);
     if (!minerConfig) return res.status(400).json({ error: 'Invalid miner' });
 
-    const users = await User.find({});
+    // Limit to non-banned users only
+    const users = await User.find({ banned: false }).select('telegramId').lean();
     let count = 0;
+    let failed = 0;
+
     for (const user of users) {
-      const miner = new ActiveMiner({
-        telegramId: user.telegramId,
-        minerId: minerConfig.id,
-        minerName: minerConfig.name,
-        level: minerConfig.level,
-        price: 0,
-        daily: minerConfig.daily,
-        totalReturn: minerConfig.total,
-        expiresAt: new Date(Date.now() + minerConfig.days * 24 * 60 * 60 * 1000)
-      });
-      await miner.save();
-      count++;
+      try {
+        await ActiveMiner.create({
+          telegramId: user.telegramId,
+          minerId: minerConfig.id,
+          minerName: minerConfig.name,
+          level: minerConfig.level,
+          price: 0,
+          daily: minerConfig.daily,
+          totalReturn: minerConfig.total,
+          startsEarningAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+          expiresAt: new Date(Date.now() + minerConfig.days * 24 * 60 * 60 * 1000)
+        });
+        count++;
+      } catch(e) { failed++; }
     }
-    await logAdmin('GIVE_MINER_ALL', 'ALL', { minerId, count }, req);
-    res.json({ success: true, count });
+
+    await logAdmin('GIVE_MINER_ALL', 'ALL', { minerId, count, failed }, req);
+    console.log(`[ADMIN] Gave ${minerConfig.name} to ${count} users (${failed} failed)`);
+    res.json({ success: true, count, failed });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -2220,8 +2403,20 @@ app.post('/api/admin/give-miner-all', adminAuth, async (req, res) => {
 app.post('/api/admin/bypass', adminAuth, async (req, res) => {
   try {
     const { telegramId, bypass } = req.body;
-    await User.findOneAndUpdate({ telegramId: telegramId.toString() }, { withdrawBypass: bypass !== false });
-    await logAdmin('BYPASS_WITHDRAW', telegramId, { bypass: bypass !== false }, req);
+    if (!isValidTelegramId(String(telegramId))) {
+      return res.status(400).json({ error: 'INVALID_TELEGRAM_ID' });
+    }
+    const tgId = String(telegramId);
+    const newBypass = bypass === true || bypass === 'true';
+
+    const updated = await User.findOneAndUpdate(
+      { telegramId: tgId },
+      { withdrawBypass: newBypass },
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ error: 'NOT_FOUND' });
+
+    await logAdmin('BYPASS_WITHDRAW', tgId, { bypass: newBypass }, req);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -2230,7 +2425,11 @@ app.post('/api/admin/bypass', adminAuth, async (req, res) => {
 
 app.get('/api/admin/withdrawals', adminAuth, async (req, res) => {
   try {
-    const status = req.query.status || 'pending';
+    // Validate status against whitelist (prevents NoSQL injection via query param)
+    const requestedStatus = String(req.query.status || 'pending');
+    const ALLOWED_STATUSES = ['pending', 'approved', 'rejected'];
+    const status = ALLOWED_STATUSES.includes(requestedStatus) ? requestedStatus : 'pending';
+
     const withdrawals = await Withdrawal.find({ status }).sort({ createdAt: -1 }).limit(50);
     res.json({ success: true, withdrawals });
   } catch (error) {
@@ -2307,18 +2506,44 @@ app.post('/api/admin/upload-image', adminAuth, async (req, res) => {
 app.post('/api/admin/broadcast', adminAuth, async (req, res) => {
   try {
     const { message, imageUrl, buttonText, buttonUrl } = req.body;
-    if (!message) return res.status(400).json({ error: 'EMPTY_MESSAGE' });
-    const users = await User.find({ banned: { $ne: true } });
-    let sent = 0, failed = 0;
 
-    const replyMarkup = (buttonText && buttonUrl) ? {
-      inline_keyboard: [[{ text: buttonText, url: buttonUrl }]]
-    } : undefined;
+    // Validate types — prevent NoSQL injection
+    if (!isValidString(message, 4000)) {
+      return res.status(400).json({ error: 'INVALID_MESSAGE', message: 'Must be 1-4000 chars' });
+    }
+
+    // Validate imageUrl format if provided
+    let safeImageUrl = null;
+    if (imageUrl) {
+      if (typeof imageUrl !== 'string' || imageUrl.length > 500) {
+        return res.status(400).json({ error: 'INVALID_IMAGE_URL' });
+      }
+      // Only allow http/https URLs
+      if (!/^https?:\/\/[a-zA-Z0-9.\-_/?&=:#%+]+$/.test(imageUrl)) {
+        return res.status(400).json({ error: 'INVALID_IMAGE_URL_FORMAT' });
+      }
+      safeImageUrl = imageUrl;
+    }
+
+    // Validate button if provided
+    let replyMarkup;
+    if (buttonText || buttonUrl) {
+      if (!isValidString(buttonText, 64)) {
+        return res.status(400).json({ error: 'INVALID_BUTTON_TEXT' });
+      }
+      if (!isValidString(buttonUrl, 500) || !/^https?:\/\//.test(buttonUrl)) {
+        return res.status(400).json({ error: 'INVALID_BUTTON_URL' });
+      }
+      replyMarkup = { inline_keyboard: [[{ text: buttonText, url: buttonUrl }]] };
+    }
+
+    const users = await User.find({ banned: { $ne: true } }).select('telegramId').lean();
+    let sent = 0, failed = 0;
 
     for (const u of users) {
       try {
-        if (imageUrl) {
-          await bot.sendPhoto(u.telegramId, imageUrl, {
+        if (safeImageUrl) {
+          await bot.sendPhoto(u.telegramId, safeImageUrl, {
             caption: message,
             parse_mode: 'HTML',
             reply_markup: replyMarkup
@@ -2334,6 +2559,8 @@ app.post('/api/admin/broadcast', adminAuth, async (req, res) => {
       // Telegram rate limit: 30 msgs/sec — sleep 50ms = max 20/sec
       await new Promise(r => setTimeout(r, 50));
     }
+
+    await logAdmin('BROADCAST', 'ALL', { sent, failed, hasImage: !!safeImageUrl }, req);
     console.log(`[BROADCAST] sent=${sent} failed=${failed}`);
     res.json({ success: true, sent, failed });
   } catch (error) {
@@ -2345,54 +2572,68 @@ app.post('/api/admin/broadcast', adminAuth, async (req, res) => {
 app.post('/api/admin/manual-deposit', adminAuth, async (req, res) => {
   try {
     const { telegramId, amount, minerId } = req.body;
-    const tgId = telegramId.toString();
-    const amt = parseFloat(amount);
-    if (!tgId || !amt || amt <= 0) return res.status(400).json({ error: 'INVALID_INPUT' });
+    if (!isValidTelegramId(String(telegramId))) {
+      return res.status(400).json({ error: 'INVALID_TELEGRAM_ID' });
+    }
+    if (!isValidNumber(amount, 0.001, 10000)) {
+      return res.status(400).json({ error: 'INVALID_AMOUNT' });
+    }
+    if (minerId !== undefined && minerId !== 'manual' && !isValidString(String(minerId), 50)) {
+      return res.status(400).json({ error: 'INVALID_MINER_ID' });
+    }
+
+    const tgId = String(telegramId);
+    const amt = Number(amount);
+    const safeMinerId = minerId ? String(minerId) : 'manual';
 
     const user = await User.findOne({ telegramId: tgId });
     if (!user) return res.status(404).json({ error: 'USER_NOT_FOUND' });
 
-    const deposit = new Deposit({
+    const deposit = await Deposit.create({
       telegramId: tgId,
       amount: amt,
-      minerId: minerId || 'manual',
+      minerId: safeMinerId,
       memo: 'ADMIN_MANUAL_' + Date.now(),
       status: 'verified',
       matchMethod: 'ADMIN_MANUAL',
-      txHash: 'MANUAL_' + Date.now(),
+      txHash: 'MANUAL_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
       verifiedAt: new Date()
     });
-    await deposit.save();
 
     await User.findOneAndUpdate(
       { telegramId: tgId },
       { $inc: { totalDeposited: amt, totalInvested: amt } }
     );
 
-    // Activate miner if minerId provided
-    if (minerId && minerId !== 'manual') {
-      const minerConfig = MINERS_CONFIG.find(m => m.id === minerId);
+    // Activate miner if minerId is a valid miner
+    if (safeMinerId !== 'manual') {
+      const minerConfig = MINERS_CONFIG.find(m => m.id === safeMinerId);
       if (minerConfig) {
-        const activateAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-        await ActiveMiner.create({
-          telegramId: tgId,
-          minerId: minerConfig.id,
-          minerName: minerConfig.name,
-          level: minerConfig.level,
-          price: minerConfig.price,
-          daily: minerConfig.daily,
-          totalReturn: minerConfig.total,
-          startsEarningAt: activateAt,
-          expiresAt: new Date(activateAt.getTime() + minerConfig.days * 24 * 60 * 60 * 1000)
-        });
+        try {
+          const activateAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+          await ActiveMiner.create({
+            telegramId: tgId,
+            minerId: minerConfig.id,
+            minerName: minerConfig.name,
+            level: minerConfig.level,
+            price: minerConfig.price,
+            daily: minerConfig.daily,
+            totalReturn: minerConfig.total,
+            startsEarningAt: activateAt,
+            expiresAt: new Date(activateAt.getTime() + minerConfig.days * 24 * 60 * 60 * 1000),
+            fromDepositId: deposit._id.toString()
+          });
+        } catch(e) {
+          console.error('[MANUAL-DEPOSIT] Miner create failed:', e.message);
+        }
       }
     }
 
     try {
-      await bot.sendMessage(tgId, `✅ Deposit of ${amt} TON credited by admin!`, { parse_mode: 'Markdown' });
+      await bot.sendMessage(tgId, `✅ Deposit of ${amt} TON credited by admin!`);
     } catch(e) {}
 
-    await logAdmin('MANUAL_DEPOSIT', tgId, { amount: amt, minerId }, req);
+    await logAdmin('MANUAL_DEPOSIT', tgId, { amount: amt, minerId: safeMinerId }, req);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -2402,8 +2643,9 @@ app.post('/api/admin/manual-deposit', adminAuth, async (req, res) => {
 // Deposits list
 app.get('/api/admin/deposits', adminAuth, async (req, res) => {
   try {
-    const status = req.query.status;
-    const query = status ? { status } : {};
+    const requestedStatus = String(req.query.status || '');
+    const ALLOWED_STATUSES = ['pending', 'processing', 'verified', 'expired', 'failed', 'legacy'];
+    const query = ALLOWED_STATUSES.includes(requestedStatus) ? { status: requestedStatus } : {};
     const deposits = await Deposit.find(query).sort({ createdAt: -1 }).limit(200);
     res.json({ success: true, deposits });
   } catch (error) {

@@ -476,7 +476,10 @@ function doLogin(){
     if(d){
       document.getElementById('loginWrap').style.display='none';
       document.getElementById('app').style.display='block';
+      // Store key with expiry (30 min)
       localStorage.setItem('cm_admin_key',KEY);
+      localStorage.setItem('cm_admin_expiry', Date.now() + 30 * 60 * 1000);
+      resetAutoLogout();
       renderStats(d);
       loadPlayers();
     }else{toast('Wrong password',true)}
@@ -484,19 +487,42 @@ function doLogin(){
 }
 
 function doLogout(){
-  KEY='';localStorage.removeItem('cm_admin_key');
+  KEY='';
+  localStorage.removeItem('cm_admin_key');
+  localStorage.removeItem('cm_admin_expiry');
+  clearTimeout(autoLogoutTimer);
   document.getElementById('app').style.display='none';
   document.getElementById('loginWrap').style.display='flex';
+  document.getElementById('adminPw').value='';
 }
 
-// Auto-login if saved
+// ─── AUTO-LOGOUT after 30 min inactivity ───
+var autoLogoutTimer;
+function resetAutoLogout(){
+  clearTimeout(autoLogoutTimer);
+  autoLogoutTimer = setTimeout(function(){
+    alert('⚠ Session expired due to inactivity. Please login again.');
+    doLogout();
+  }, 30 * 60 * 1000);   // 30 min
+}
+
+// Reset timer on any user activity
+['click','keydown','mousemove','scroll'].forEach(function(evt){
+  document.addEventListener(evt, function(){
+    if(KEY) resetAutoLogout();
+  }, { passive: true });
+});
+
+// Auto-login if saved AND not expired
 var savedKey=localStorage.getItem('cm_admin_key');
-if(savedKey){
+var savedExpiry=parseInt(localStorage.getItem('cm_admin_expiry') || '0');
+if(savedKey && savedExpiry > Date.now()){
   KEY=savedKey;
   af('/api/admin/stats').then(function(d){
     if(d){
       document.getElementById('loginWrap').style.display='none';
       document.getElementById('app').style.display='block';
+      resetAutoLogout();
       renderStats(d);loadPlayers();
     }
   });
