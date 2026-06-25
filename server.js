@@ -2080,8 +2080,8 @@ async function seedTasks() {
     { taskId: 't_buy_today', title: 'Buy Miner Today', description: 'Purchase a new miner today', icon: '⛏️', rewardMin: 0.005, rewardMax: 0.006, rewardLabel: '0.005-0.1', type: 'daily', category: 'daily', isDaily: true, requireDepositToday: true, position: 2 },
 
     // ─── CHANNELS (one-time, verified) ───
-    { taskId: 't_news', title: 'Join News Channel', description: 'Stay updated with latest news', icon: '📢', reward: 0.001, link: `https://t.me/${newsCh}`, type: 'channel', category: 'partner', isVerifiedChannel: true, position: 1 },
-    { taskId: 't_payouts', title: 'Join Payout Channel', description: 'See proof of payments', icon: '💸', reward: 0.001, link: `https://t.me/${payoutCh}`, type: 'channel', category: 'partner', isVerifiedChannel: true, position: 2 }
+    { taskId: 't_news', title: 'Join News Channel', description: 'Stay updated with latest news', icon: '📢', reward: 0.02, link: `https://t.me/${newsCh}`, type: 'channel', category: 'partner', isVerifiedChannel: true, position: 1 },
+    { taskId: 't_payouts', title: 'Join Payout Channel', description: 'See proof of payments', icon: '💸', reward: 0.02, link: `https://t.me/${payoutCh}`, type: 'channel', category: 'partner', isVerifiedChannel: true, position: 2 }
   ]);
   console.log('✅ Tasks seeded: 2 daily + 2 channels');
 }
@@ -3383,12 +3383,12 @@ app.post('/api/admin/reseed-tasks', adminAuth, async (req, res) => {
       // ── CHANNELS (one-time, verified) ──
       {
         taskId: 't_news', title: 'Join News Channel', description: 'Stay updated with latest news',
-        icon: '📢', reward: 0.001, link: `https://t.me/${newsCh}`,
+        icon: '📢', reward: 0.02, link: `https://t.me/${newsCh}`,
         type: 'channel', category: 'partner', isVerifiedChannel: true, position: 1
       },
       {
         taskId: 't_payouts', title: 'Join Payout Channel', description: 'See proof of payments',
-        icon: '💸', reward: 0.001, link: `https://t.me/${payoutCh}`,
+        icon: '💸', reward: 0.02, link: `https://t.me/${payoutCh}`,
         type: 'channel', category: 'partner', isVerifiedChannel: true, position: 2
       }
     ]);
