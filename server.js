@@ -2640,6 +2640,221 @@ app.post('/api/admin/manual-deposit', adminAuth, async (req, res) => {
 });
 
 // Deposits list
+// ============ HEALTH MONITORING (Real-time bot status) ============
+app.get('/api/admin/health-check', adminAuth, async (req, res) => {
+  try {
+    const now = Date.now();
+    const last24h = new Date(now - 24*60*60*1000);
+    const lastHour = new Date(now - 60*60*1000);
+
+    // System stats
+    const [
+      totalUsers,
+      newUsers24h,
+      activeMiners,
+      pendingDeposits,
+      verifiedDeposits24h,
+      failedDeposits24h,
+      pendingWithdrawals,
+      approvedWithdrawals24h,
+      totalDepositedTON,
+      totalWithdrawnTON,
+      processedTxs24h,
+      bannedUsers
+    ] = await Promise.all([
+      User.countDocuments(),
+      User.countDocuments({ createdAt: { $gte: last24h } }),
+      ActiveMiner.countDocuments({ status: 'active' }),
+      Deposit.countDocuments({ status: 'pending' }),
+      Deposit.countDocuments({ status: 'verified', verifiedAt: { $gte: last24h } }),
+      Deposit.countDocuments({ status: 'failed', createdAt: { $gte: last24h } }),
+      Withdrawal.countDocuments({ status: 'pending' }),
+      Withdrawal.countDocuments({ status: 'approved', createdAt: { $gte: last24h } }),
+      Deposit.aggregate([{ $match: { status: 'verified' } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+      Withdrawal.aggregate([{ $match: { status: 'approved' } }, { $group: { _id: null, total: { $sum: '$netAmount' } } }]),
+      ProcessedTx.countDocuments({ processedAt: { $gte: last24h } }),
+      User.countDocuments({ banned: true })
+    ]);
+
+    // Detect anomalies
+    const warnings = [];
+    if (pendingDeposits > 30) warnings.push(`⚠️ ${pendingDeposits} pending deposits accumulating`);
+    if (pendingWithdrawals > 10) warnings.push(`⚠️ ${pendingWithdrawals} pending withdrawals`);
+    if (failedDeposits24h > 5) warnings.push(`⚠️ ${failedDeposits24h} failed deposits in 24h`);
+
+    // Recent suspicious activity
+    const recentFailures = await Deposit.find({
+      status: 'pending',
+      createdAt: { $lt: new Date(now - 60*60*1000) }    // older than 1h
+    }).limit(20);
+
+    // Stuck deposits (memo created but never paid)
+    const stuckDeposits = recentFailures.length;
+    if (stuckDeposits > 10) warnings.push(`⚠️ ${stuckDeposits} deposits stuck >1h`);
+
+    // Recent activity (last hour)
+    const recentDeposits = await Deposit.find({
+      verifiedAt: { $gte: lastHour }
+    }).sort({ verifiedAt: -1 }).limit(5).select('telegramId amount memo matchMethod verifiedAt');
+
+    const recentWithdrawals = await Withdrawal.find({
+      createdAt: { $gte: lastHour }
+    }).sort({ createdAt: -1 }).limit(5).select('telegramId amount status createdAt');
+
+    res.json({
+      success: true,
+      timestamp: new Date(),
+      status: warnings.length === 0 ? 'HEALTHY' : 'WARNING',
+      warnings,
+
+      users: {
+        total: totalUsers,
+        new24h: newUsers24h,
+        banned: bannedUsers,
+        active_miners: activeMiners
+      },
+
+      deposits: {
+        pending: pendingDeposits,
+        verified_24h: verifiedDeposits24h,
+        failed_24h: failedDeposits24h,
+        processed_txs_24h: processedTxs24h,
+        total_deposited_TON: (totalDepositedTON[0]?.total || 0).toFixed(4)
+      },
+
+      withdrawals: {
+        pending: pendingWithdrawals,
+        approved_24h: approvedWithdrawals24h,
+        total_paid_TON: (totalWithdrawnTON[0]?.total || 0).toFixed(4)
+      },
+
+      financial: {
+        net_balance_TON: ((totalDepositedTON[0]?.total || 0) - (totalWithdrawnTON[0]?.total || 0)).toFixed(4),
+        profit_estimate: '(deposits - withdrawals - cron costs)'
+      },
+
+      recent_activity: {
+        last_5_deposits: recentDeposits,
+        last_5_withdrawals: recentWithdrawals
+      }
+    });
+  } catch (error) {
+    console.error('[HEALTH]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ BUG DETECTOR (Find inconsistencies in DB) ============
+app.get('/api/admin/bug-scan', adminAuth, async (req, res) => {
+  try {
+    const issues = [];
+
+    // 1. Users with negative balance (impossible)
+    const negativeBalances = await User.find({ balance: { $lt: 0 } })
+      .limit(20).select('telegramId balance firstName');
+    if (negativeBalances.length > 0) {
+      issues.push({
+        severity: 'CRITICAL',
+        type: 'NEGATIVE_BALANCE',
+        count: negativeBalances.length,
+        examples: negativeBalances.map(u => `${u.telegramId}: ${u.balance} TON`)
+      });
+    }
+
+    // 2. Duplicate active miners (same user, same minerId, both active)
+    const duplicateMiners = await ActiveMiner.aggregate([
+      { $match: { status: 'active' } },
+      { $group: { _id: { telegramId: '$telegramId', minerId: '$minerId' }, count: { $sum: 1 }, ids: { $push: '$_id' } } },
+      { $match: { count: { $gt: 1 } } },
+      { $limit: 20 }
+    ]);
+    if (duplicateMiners.length > 0) {
+      issues.push({
+        severity: 'HIGH',
+        type: 'DUPLICATE_MINERS',
+        count: duplicateMiners.length,
+        examples: duplicateMiners.map(d => `${d._id.telegramId}: ${d._id.minerId} x${d.count}`)
+      });
+    }
+
+    // 3. Verified deposits without ProcessedTx entry (potential exploit)
+    const verifiedSample = await Deposit.find({
+      status: 'verified',
+      txHash: { $exists: true, $ne: null, $ne: 'manual', $not: /^MANUAL_|^BALANCE_/ }
+    }).limit(50);
+    const missingLedger = [];
+    for (const dep of verifiedSample) {
+      const inLedger = await ProcessedTx.findOne({ txHash: dep.txHash });
+      if (!inLedger) missingLedger.push(dep._id.toString());
+    }
+    if (missingLedger.length > 0) {
+      issues.push({
+        severity: 'MEDIUM',
+        type: 'VERIFIED_NO_LEDGER',
+        count: missingLedger.length,
+        message: 'Verified deposits without TX ledger entry (could be reused)',
+        examples: missingLedger.slice(0, 10)
+      });
+    }
+
+    // 4. Pending deposits older than 48h (should auto-expire)
+    const oldPending = await Deposit.countDocuments({
+      status: 'pending',
+      createdAt: { $lt: new Date(Date.now() - 48*60*60*1000) }
+    });
+    if (oldPending > 0) {
+      issues.push({
+        severity: 'LOW',
+        type: 'OLD_PENDING_DEPOSITS',
+        count: oldPending,
+        message: 'TTL index may not be working'
+      });
+    }
+
+    // 5. Users with referredBy but no ReferralLog (race condition victims)
+    const usersWithRef = await User.find({ referredBy: { $ne: null } }).select('telegramId referredBy').lean();
+    const missingLogs = [];
+    for (const u of usersWithRef.slice(0, 100)) {
+      const log = await ReferralLog.findOne({ referrerId: u.referredBy, referredId: u.telegramId });
+      if (!log) missingLogs.push(u.telegramId);
+    }
+    if (missingLogs.length > 0) {
+      issues.push({
+        severity: 'LOW',
+        type: 'MISSING_REFERRAL_LOGS',
+        count: missingLogs.length,
+        message: 'Run /api/admin/validate-pending-refs to fix'
+      });
+    }
+
+    // 6. Approved withdrawals that didn't get totalWithdrawn updated
+    const recentApproved = await Withdrawal.find({ status: 'approved' }).limit(50);
+    let totalMismatch = 0;
+    for (const w of recentApproved) {
+      const user = await User.findOne({ telegramId: w.telegramId }).select('totalWithdrawn').lean();
+      if (user && user.totalWithdrawn < w.netAmount) totalMismatch++;
+    }
+    if (totalMismatch > 0) {
+      issues.push({
+        severity: 'LOW',
+        type: 'WITHDRAW_STATS_MISMATCH',
+        count: totalMismatch,
+        message: 'Stat inconsistency (cosmetic)'
+      });
+    }
+
+    res.json({
+      success: true,
+      timestamp: new Date(),
+      status: issues.length === 0 ? '✅ NO ISSUES FOUND' : `⚠️ ${issues.length} ISSUE(S) FOUND`,
+      issues
+    });
+  } catch (error) {
+    console.error('[BUG-SCAN]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/admin/deposits', adminAuth, async (req, res) => {
   try {
     const requestedStatus = String(req.query.status || '');
