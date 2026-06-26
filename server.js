@@ -1051,8 +1051,9 @@ app.post('/api/partner/apply', criticalLimiter, async (req, res) => {
     const link = sanitize(channelLink);
     const desc = sanitize(description || '');
 
-    if (!link.match(/^https?:\/\/(t\.me|telegram\.me)\/[a-zA-Z0-9_+]+$/)) {
-      return res.status(400).json({ error: 'INVALID_LINK', message: 'Please provide a valid t.me link' });
+    // Accept ANY link — basic length validation only
+    if (!link || link.length < 5 || link.length > 500) {
+      return res.status(400).json({ error: 'INVALID_LINK', message: 'Link too short or too long' });
     }
 
     const user = await User.findOne({ telegramId: tgId });
