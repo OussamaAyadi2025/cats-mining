@@ -2399,6 +2399,53 @@ app.post('/api/admin/give-miner', adminAuth, async (req, res) => {
   }
 });
 
+// Remove a specific miner from a user
+app.post('/api/admin/remove-miner', adminAuth, async (req, res) => {
+  try {
+    const { telegramId, minerId } = req.body;
+    if (!isValidTelegramId(String(telegramId))) {
+      return res.status(400).json({ error: 'INVALID_TELEGRAM_ID' });
+    }
+    if (!isValidString(minerId, 50)) {
+      return res.status(400).json({ error: 'INVALID_MINER_ID' });
+    }
+    const tgId = String(telegramId);
+
+    // Delete only ONE miner (oldest first) of this type — admin might want to remove duplicates
+    const miner = await ActiveMiner.findOneAndDelete(
+      { telegramId: tgId, minerId },
+      { sort: { startedAt: 1 } }
+    );
+
+    if (!miner) return res.status(404).json({ error: 'MINER_NOT_FOUND' });
+
+    await logAdmin('REMOVE_MINER', tgId, { minerId, minerName: miner.minerName }, req);
+    res.json({ success: true, removed: { minerId: miner.minerId, minerName: miner.minerName } });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Remove ALL miners from a user (cleanup)
+app.post('/api/admin/remove-all-miners', adminAuth, async (req, res) => {
+  try {
+    const { telegramId, confirm } = req.body;
+    if (confirm !== 'YES_REMOVE_ALL') {
+      return res.status(400).json({ error: 'CONFIRMATION_REQUIRED' });
+    }
+    if (!isValidTelegramId(String(telegramId))) {
+      return res.status(400).json({ error: 'INVALID_TELEGRAM_ID' });
+    }
+    const tgId = String(telegramId);
+
+    const result = await ActiveMiner.deleteMany({ telegramId: tgId });
+    await logAdmin('REMOVE_ALL_MINERS', tgId, { count: result.deletedCount }, req);
+    res.json({ success: true, removed: result.deletedCount });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/admin/give-miner-all', adminAuth, async (req, res) => {
   try {
     const { minerId, confirm } = req.body;

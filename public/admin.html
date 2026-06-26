@@ -373,7 +373,7 @@ textarea.inp{resize:vertical;min-height:90px;font-family:var(--mono);font-size:1
           <h3>💰 Manual Deposit</h3>
           <div class="field"><label>Telegram ID</label><input class="inp" id="mdId" placeholder="5640479009"></div>
           <div class="field"><label>Amount TON</label><input class="inp" id="mdAmt" type="number" step="0.01" placeholder="0.5"></div>
-          <div class="field"><label>Miner ID (optional)</label><select class="inp" id="mdMiner"><option value="">None</option><option value="m_whiskers">Whiskers (0.5)</option><option value="m_mittens">Mittens (1)</option><option value="m_shadow">Shadow (3)</option><option value="m_luna">Luna (7)</option><option value="m_tiger">Tiger (15)</option><option value="m_leo">Leo (30)</option><option value="m_panther">Panther (50)</option><option value="m_raja">Raja (100)</option></select></div>
+          <div class="field"><label>Miner ID (optional)</label><select class="inp" id="mdMiner"><option value="">None</option><option value="miner_1">Whiskers (0.5)</option><option value="miner_2">Mittens (1)</option><option value="miner_3">Shadow (3)</option><option value="miner_4">Luna (7)</option><option value="miner_5">Tiger (15)</option><option value="miner_6">Leo (30)</option><option value="miner_7">Panther (50)</option><option value="miner_8">Raja (100)</option></select></div>
           <button class="btn btn-success" onclick="manualDeposit()">Credit + Activate</button>
         </div>
       </div>
@@ -381,8 +381,17 @@ textarea.inp{resize:vertical;min-height:90px;font-family:var(--mono);font-size:1
         <div class="section">
           <h3>🐱 Give Free Miner</h3>
           <div class="field"><label>Telegram ID</label><input class="inp" id="gmId" placeholder="5640479009"></div>
-          <div class="field"><label>Miner</label><select class="inp" id="gmMiner"><option value="m_whiskers">Whiskers (0.5)</option><option value="m_mittens">Mittens (1)</option><option value="m_shadow">Shadow (3)</option><option value="m_luna">Luna (7)</option><option value="m_tiger">Tiger (15)</option><option value="m_leo">Leo (30)</option><option value="m_panther">Panther (50)</option><option value="m_raja">Raja (100)</option></select></div>
+          <div class="field"><label>Miner</label><select class="inp" id="gmMiner"><option value="miner_0">Kitty (FREE)</option><option value="miner_1">Whiskers (0.5 TON)</option><option value="miner_2">Mittens (1 TON)</option><option value="miner_3">Shadow (3 TON)</option><option value="miner_4">Luna (7 TON)</option><option value="miner_5">Tiger (15 TON)</option><option value="miner_6">Leo (30 TON)</option><option value="miner_7">Panther (50 TON)</option><option value="miner_8">Raja (100 TON)</option></select></div>
           <button class="btn btn-primary" onclick="giveMiner()">🎁 Give Miner</button>
+        </div>
+        <div class="section">
+          <h3>🗑️ Remove Miner</h3>
+          <div class="field"><label>Telegram ID</label><input class="inp" id="rmId" placeholder="5640479009"></div>
+          <div class="field"><label>Miner to remove</label><select class="inp" id="rmMiner"><option value="miner_0">Kitty</option><option value="miner_1">Whiskers</option><option value="miner_2">Mittens</option><option value="miner_3">Shadow</option><option value="miner_4">Luna</option><option value="miner_5">Tiger</option><option value="miner_6">Leo</option><option value="miner_7">Panther</option><option value="miner_8">Raja</option></select></div>
+          <div class="act-row">
+            <button class="btn btn-danger btn-sm" onclick="removeMiner()">Remove One</button>
+            <button class="btn btn-danger btn-sm" onclick="removeAllMiners()">Remove ALL</button>
+          </div>
         </div>
         <div class="section">
           <h3>🔓 Withdraw Bypass</h3>
@@ -1110,11 +1119,42 @@ async function manualDeposit(){
 }
 
 async function giveMiner(){
-  var id=document.getElementById('gmId').value;
+  var id=document.getElementById('gmId').value.trim();
   var miner=document.getElementById('gmMiner').value;
   if(!id||!miner)return toast('Fill all fields',true);
   var d=await af('/api/admin/give-miner','POST',{telegramId:id,minerId:miner});
-  if(d)toast('Miner given!');
+  if(d && d.success){
+    toast('✅ Miner given: '+miner);
+    document.getElementById('gmId').value='';
+  } else if(d) {
+    toast('❌ '+(d.error||'Failed'),true);
+  }
+}
+
+async function removeMiner(){
+  var id=document.getElementById('rmId').value.trim();
+  var miner=document.getElementById('rmMiner').value;
+  if(!id||!miner)return toast('Fill all fields',true);
+  if(!confirm('Remove one '+miner+' from user '+id+'?'))return;
+  var d=await af('/api/admin/remove-miner','POST',{telegramId:id,minerId:miner});
+  if(d && d.success){
+    toast('✅ Removed: '+d.removed.minerName);
+  } else if(d) {
+    toast('❌ '+(d.error||'Failed'),true);
+  }
+}
+
+async function removeAllMiners(){
+  var id=document.getElementById('rmId').value.trim();
+  if(!id)return toast('Enter ID',true);
+  if(!confirm('⚠️ DELETE ALL miners from user '+id+'?\nThis cannot be undone!'))return;
+  if(!confirm('Are you ABSOLUTELY sure?'))return;
+  var d=await af('/api/admin/remove-all-miners','POST',{telegramId:id,confirm:'YES_REMOVE_ALL'});
+  if(d && d.success){
+    toast('✅ Removed '+d.removed+' miners');
+  } else if(d) {
+    toast('❌ '+(d.error||'Failed'),true);
+  }
 }
 
 async function bypassWd(v){
