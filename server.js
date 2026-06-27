@@ -2382,26 +2382,62 @@ app.post('/api/admin/give-miner', adminAuth, async (req, res) => {
     }
 
     const tgId = String(telegramId);
-    const minerConfig = MINERS_CONFIG.find(m => m.id === minerId);
-    if (!minerConfig) return res.status(400).json({ error: 'Invalid miner' });
+    let requestedId = String(minerId).trim().toLowerCase();
+
+    // Legacy ID mapping (m_whiskers → miner_1, etc.)
+    const LEGACY_MAP = {
+      'm_kitty': 'miner_0',
+      'm_whiskers': 'miner_1',
+      'm_mittens': 'miner_2',
+      'm_shadow': 'miner_3',
+      'm_luna': 'miner_4',
+      'm_tiger': 'miner_5',
+      'm_leo': 'miner_6',
+      'm_panther': 'miner_7',
+      'm_raja': 'miner_8'
+    };
+    if (LEGACY_MAP[requestedId]) requestedId = LEGACY_MAP[requestedId];
+
+    // Also try by name (case-insensitive)
+    let minerConfig = MINERS_CONFIG.find(m => m.id === requestedId);
+    if (!minerConfig) {
+      minerConfig = MINERS_CONFIG.find(m => m.name.toLowerCase() === requestedId);
+    }
+    if (!minerConfig) {
+      return res.status(400).json({
+        error: 'INVALID_MINER',
+        message: `Miner '${minerId}' not found. Valid IDs: miner_0 to miner_8`,
+        availableMiners: MINERS_CONFIG.map(m => ({ id: m.id, name: m.name }))
+      });
+    }
 
     const user = await User.findOne({ telegramId: tgId }).select('_id').lean();
-    if (!user) return res.status(404).json({ error: 'USER_NOT_FOUND' });
+    if (!user) return res.status(404).json({ error: 'USER_NOT_FOUND', message: 'User does not exist in database' });
 
-    const miner = await ActiveMiner.create({
-      telegramId: tgId,
-      minerId: minerConfig.id,
-      minerName: minerConfig.name,
-      level: minerConfig.level,
-      price: 0,
-      daily: minerConfig.daily,
-      totalReturn: minerConfig.total,
-      startsEarningAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-      expiresAt: new Date(Date.now() + minerConfig.days * 24 * 60 * 60 * 1000)
-    });
-    await logAdmin('GIVE_MINER', tgId, { minerId, minerName: minerConfig.name }, req);
-    res.json({ success: true, miner });
+    try {
+      const miner = await ActiveMiner.create({
+        telegramId: tgId,
+        minerId: minerConfig.id,
+        minerName: minerConfig.name,
+        level: minerConfig.level,
+        price: 0,
+        daily: minerConfig.daily,
+        totalReturn: minerConfig.total,
+        startsEarningAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        expiresAt: new Date(Date.now() + minerConfig.days * 24 * 60 * 60 * 1000)
+      });
+      await logAdmin('GIVE_MINER', tgId, { minerId: minerConfig.id, minerName: minerConfig.name }, req);
+      console.log(`[ADMIN] Gave ${minerConfig.name} to ${tgId}`);
+      res.json({ success: true, miner, message: `${minerConfig.name} given to ${tgId}` });
+    } catch(err) {
+      if (err.code === 11000) {
+        // Duplicate (only happens with Kitty - unique partial index)
+        return res.status(400).json({ error: 'ALREADY_HAS_MINER', message: 'User already has this Kitty miner' });
+      }
+      throw err;
+    }
   } catch (error) {
+    console.error('[GIVE-MINER]', error);
     res.status(500).json({ error: error.message });
   }
 });
