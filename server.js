@@ -1047,17 +1047,17 @@ app.post('/api/partner/apply', criticalLimiter, async (req, res) => {
     if (!telegramId || !channelLink) return res.status(400).json({ error: 'INVALID' });
     const tgId = telegramId.toString();
 
-    // Idempotency
+    // Light idempotency (3 sec) — only prevents accidental double-click
     if (!checkIdemp(tgId, 'partner-apply')) {
-      return res.status(429).json({ error: 'DUPLICATE_REQUEST' });
+      return res.status(429).json({ error: 'DUPLICATE_REQUEST', message: 'Please wait a moment' });
     }
 
     // Sanitize
     const link = sanitize(channelLink);
     const desc = sanitize(description || '');
 
-    // Accept ANY link — basic length validation only
-    if (!link || link.length < 5 || link.length > 500) {
+    // Accept ANY link — only XSS protection + length check
+    if (!link || link.length < 3 || link.length > 500) {
       return res.status(400).json({ error: 'INVALID_LINK', message: 'Link too short or too long' });
     }
 
@@ -1065,22 +1065,23 @@ app.post('/api/partner/apply', criticalLimiter, async (req, res) => {
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (user.banned) return res.status(403).json({ error: 'ACCOUNT_BANNED' });
 
-    // Check if already has pending or recent rejected request (limit 1 per week)
-    const existing = await PartnerRequest.findOne({
+    // ─── 1 POST PER DAY PER USER ───
+    // User can submit ANY link (any platform) but only 1 per 24h
+    const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const recentSubmission = await PartnerRequest.findOne({
       telegramId: tgId,
-      $or: [
-        { status: 'pending' },
-        { status: 'rejected', createdAt: { $gte: new Date(Date.now() - 7*24*60*60*1000) } }
-      ]
-    });
-    if (existing) {
-      const msg = existing.status === 'pending' ? 'You already have a pending request' : 'You can re-apply 7 days after rejection';
-      return res.status(400).json({ error: 'EXISTS', message: msg });
-    }
+      createdAt: { $gte: last24h }
+    }).sort({ createdAt: -1 });
 
-    // Check duplicate channel
-    const dupChannel = await PartnerRequest.findOne({ channelLink: link, status: { $in: ['pending', 'approved'] } });
-    if (dupChannel) return res.status(400).json({ error: 'CHANNEL_TAKEN', message: 'This channel was already submitted' });
+    if (recentSubmission) {
+      const hoursAgo = Math.floor((Date.now() - new Date(recentSubmission.createdAt)) / (60 * 60 * 1000));
+      const hoursLeft = 24 - hoursAgo;
+      return res.status(429).json({
+        error: 'DAILY_LIMIT',
+        message: `You already submitted today. Try again in ${hoursLeft} hour${hoursLeft !== 1 ? 's' : ''}.`,
+        hoursLeft
+      });
+    }
 
     const request = new PartnerRequest({
       telegramId: tgId,
