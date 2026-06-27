@@ -354,7 +354,7 @@ async function buyMiner(minerId) {
     const r = await fetch(API+'/api/miners/buy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({telegramId:userData.telegramId,minerId})});
     const d = await r.json();
     if (d.success && d.type==='free') {
-      toast(miner.name+' activated! Starts earning in 24h');
+      toast(miner.name+' activated! Mining started ⛏️');
       await refreshUser();
       return;
     }
@@ -448,7 +448,7 @@ function showBuyModal(miner, memo) {
       </div>
     </button>
 
-    <div class="buy-info"><img class="cat-btn" src="images/cat-icon.png" style="filter:brightness(0) saturate(100%) invert(72%) sepia(89%) saturate(1234%) hue-rotate(353deg)"> Miner starts earning 24h after verification</div>
+    <div class="buy-info"><img class="cat-btn" src="images/cat-icon.png" style="filter:brightness(0) saturate(100%) invert(72%) sepia(89%) saturate(1234%) hue-rotate(353deg)"> Miner starts earning instantly ⛏️</div>
   `;
   modal.style.display = 'flex';
 }
@@ -571,7 +571,7 @@ async function payOption2() {
     });
     const d = await r.json();
     if (d.success) {
-      toast('✓ '+currentBuyMiner.name+' activated! Starts in 24h');
+      toast('✓ '+currentBuyMiner.name+' activated! Mining started ⛏️');
       document.getElementById('buy-modal').style.display='none';
       await refreshUser();
     } else {

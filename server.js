@@ -600,7 +600,7 @@ app.post('/api/miners/buy', strictLimiter, async (req, res) => {
 
       // Atomic check: createIndex (telegramId + minerId) prevents duplicates
       const now = new Date();
-      const startsEarning = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+      const startsEarning = new Date();   // Instant start - no warmup
       try {
         const miner = await ActiveMiner.create({
           telegramId: tgId,
@@ -743,7 +743,7 @@ app.post('/api/miners/buy-balance', criticalLimiter, async (req, res) => {
     });
 
     // Activate miner with 24h delay (LINK to deposit to prevent duplicates)
-    const activateAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const activateAt = new Date();   // Instant start - no warmup
     let miner;
     try {
       miner = await ActiveMiner.create({
@@ -1724,7 +1724,7 @@ async function checkMilestones(telegramId) {
 
       // Now create the miner - if fails, rollback the claim
       try {
-        const activateAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        const activateAt = new Date();   // Instant start - no warmup
         await ActiveMiner.create({
           telegramId: tgId,
           minerId: minerConfig.id,
@@ -1983,7 +1983,7 @@ async function verifyDeposits() {
       }
 
       try {
-        const activateAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        const activateAt = new Date();   // Instant start - no warmup
         const miner = await ActiveMiner.create({
           telegramId: locked.telegramId,
           minerId: minerConfig.id,
@@ -2423,7 +2423,7 @@ app.post('/api/admin/give-miner', adminAuth, async (req, res) => {
         price: 0,
         daily: minerConfig.daily,
         totalReturn: minerConfig.total,
-        startsEarningAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        startsEarningAt: new Date(),
         expiresAt: new Date(Date.now() + minerConfig.days * 24 * 60 * 60 * 1000)
       });
       await logAdmin('GIVE_MINER', tgId, { minerId: minerConfig.id, minerName: minerConfig.name }, req);
@@ -2523,7 +2523,7 @@ app.post('/api/admin/give-miner-all', adminAuth, async (req, res) => {
           price: 0,
           daily: minerConfig.daily,
           totalReturn: minerConfig.total,
-          startsEarningAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+          startsEarningAt: new Date(),
           expiresAt: new Date(Date.now() + minerConfig.days * 24 * 60 * 60 * 1000)
         });
         count++;
@@ -2748,7 +2748,7 @@ app.post('/api/admin/manual-deposit', adminAuth, async (req, res) => {
       const minerConfig = MINERS_CONFIG.find(m => m.id === safeMinerId);
       if (minerConfig) {
         try {
-          const activateAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+          const activateAt = new Date();   // Instant start - no warmup
           await ActiveMiner.create({
             telegramId: tgId,
             minerId: minerConfig.id,
@@ -3060,7 +3060,7 @@ app.post('/api/admin/verify-deposit-manual', adminAuth, async (req, res) => {
     const minerConfig = MINERS_CONFIG.find(m => m.id === dep.minerId);
     if (minerConfig) {
       try {
-        const activateAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        const activateAt = new Date();   // Instant start - no warmup
         await ActiveMiner.create({
           telegramId: dep.telegramId,
           minerId: minerConfig.id,
